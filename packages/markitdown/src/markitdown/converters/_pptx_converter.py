@@ -9,7 +9,7 @@ from typing import BinaryIO, Any
 from operator import attrgetter
 
 from ._html_converter import HtmlConverter
-from ._llm_caption import llm_caption
+from ._llm_providers import caption_image
 from .._base_converter import DocumentConverter, DocumentConverterResult
 from .._stream_info import StreamInfo
 from .._exceptions import MissingDependencyException, MISSING_DEPENDENCY_MESSAGE
@@ -115,14 +115,34 @@ class PptxConverter(DocumentConverter):
 
                         image_stream = io.BytesIO(shape.image.blob)
 
-                        # Caption the image
+                        # Caption the image with context from slide
+                        # Extract context from slide text for better descriptions
+                        slide_text_before = ""
+                        slide_text_after = ""
                         try:
-                            llm_description = llm_caption(
+                            shape_index = list(slide.shapes).index(shape)
+                            for idx, other_shape in enumerate(slide.shapes):
+                                if other_shape != shape and hasattr(other_shape, 'has_text_frame') and other_shape.has_text_frame:
+                                    if idx < shape_index:
+                                        slide_text_before += other_shape.text + " "
+                                    elif idx > shape_index:
+                                        slide_text_after += other_shape.text + " "
+                        except (ValueError, AttributeError):
+                            # If we can't get shape index, just collect all text
+                            for other_shape in slide.shapes:
+                                if other_shape != shape and hasattr(other_shape, 'has_text_frame') and other_shape.has_text_frame:
+                                    slide_text_before += other_shape.text + " "
+                        
+                        try:
+                            llm_description = caption_image(
                                 image_stream,
                                 image_stream_info,
                                 client=llm_client,
                                 model=llm_model,
                                 prompt=kwargs.get("llm_prompt"),
+                                context_before=slide_text_before[:800] if slide_text_before else None,
+                                context_after=slide_text_after[:800] if slide_text_after else None,
+                                use_advanced_prompt=kwargs.get("llm_use_advanced_prompt", True),
                             )
                         except Exception:
                             # Unable to generate a description

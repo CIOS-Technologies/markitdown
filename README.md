@@ -21,7 +21,7 @@ MarkItDown currently supports the conversion from:
 - PowerPoint
 - Word
 - Excel
-- Images (EXIF metadata and OCR)
+- Images (EXIF metadata, OCR, and AI descriptions via OpenAI/Gemini)
 - Audio (EXIF metadata and speech transcription)
 - HTML
 - Text-based formats (CSV, JSON, XML)
@@ -164,8 +164,14 @@ result = md.convert("test.pdf")
 print(result.text_content)
 ```
 
-To use Large Language Models for image descriptions (currently only for pptx and image files), provide `llm_client` and `llm_model`:
+To use Large Language Models for image descriptions (PDF, PPTX, and image files), you can use either OpenAI or Google Gemini:
 
+**Gemini (Recommended for images):**
+```python
+md = MarkItDown(gemini_api_key="your-gemini-api-key", llm_model="gemini-2.5-flash")
+```
+
+**OpenAI:**
 ```python
 from markitdown import MarkItDown
 from openai import OpenAI
@@ -173,6 +179,16 @@ from openai import OpenAI
 client = OpenAI()
 md = MarkItDown(llm_client=client, llm_model="gpt-4o", llm_prompt="optional custom prompt")
 result = md.convert("example.jpg")
+print(result.text_content)
+```
+
+**Gemini with PDF image extraction:**
+```python
+from markitdown import MarkItDown
+
+md = MarkItDown(gemini_api_key="your-gemini-api-key", llm_model="gemini-2.5-flash")
+# Images are automatically extracted from PDFs and processed
+result = md.convert("document_with_images.pdf")
 print(result.text_content)
 ```
 

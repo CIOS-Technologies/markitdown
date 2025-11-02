@@ -116,6 +116,7 @@ class MarkItDown:
         self._llm_client: Any = None
         self._llm_model: Union[str | None] = None
         self._llm_prompt: Union[str | None] = None
+        self._gemini_api_key: Union[str | None] = None
         self._exiftool_path: Union[str | None] = None
         self._style_map: Union[str | None] = None
 
@@ -141,8 +142,20 @@ class MarkItDown:
             self._llm_client = kwargs.get("llm_client")
             self._llm_model = kwargs.get("llm_model")
             self._llm_prompt = kwargs.get("llm_prompt")
+            self._gemini_api_key = kwargs.get("gemini_api_key")
             self._exiftool_path = kwargs.get("exiftool_path")
             self._style_map = kwargs.get("style_map")
+            
+            # If Gemini API key provided but no client, create Gemini client
+            # Also check environment variable if api_key is None
+            if self._llm_client is None:
+                from .converters._llm_providers import create_gemini_client
+                gemini_client = create_gemini_client(self._gemini_api_key)
+                if gemini_client:
+                    self._llm_client = gemini_client
+                    # Default to Gemini model if model not specified
+                    if self._llm_model is None:
+                        self._llm_model = "gemini-2.5-flash"
 
             if self._exiftool_path is None:
                 self._exiftool_path = os.getenv("EXIFTOOL_PATH")
@@ -563,6 +576,10 @@ class MarkItDown:
 
                 if "llm_prompt" not in _kwargs and self._llm_prompt is not None:
                     _kwargs["llm_prompt"] = self._llm_prompt
+
+                if "llm_use_advanced_prompt" not in _kwargs:
+                    # Enable advanced prompts by default for better descriptions
+                    _kwargs["llm_use_advanced_prompt"] = True
 
                 if "style_map" not in _kwargs and self._style_map is not None:
                     _kwargs["style_map"] = self._style_map

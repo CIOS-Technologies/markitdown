@@ -47,7 +47,9 @@ all = [
   "SpeechRecognition",
   "youtube-transcript-api~=1.0.0",
   "azure-ai-documentintelligence",
-  "azure-identity"
+  "azure-identity",
+  "google-generativeai",
+  "pillow"
 ]
 pptx = ["python-pptx"]
 docx = ["mammoth~=1.11.0", "lxml"]
@@ -77,6 +79,8 @@ features = ["all"]
 features = ["all"]
 extra-dependencies = [
   "openai",
+  "google-generativeai",
+  "pillow",
 ]
 
 [tool.hatch.envs.types]
