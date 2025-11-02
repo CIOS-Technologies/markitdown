@@ -41,7 +41,7 @@ all = [
   "openpyxl",
   "xlrd",
   "lxml",
-  "pdfminer.six",
+  "pymupdf4llm",
   "olefile",
   "pydub",
   "SpeechRecognition",
@@ -55,7 +55,7 @@ pptx = ["python-pptx"]
 docx = ["mammoth~=1.11.0", "lxml"]
 xlsx = ["pandas", "openpyxl"]
 xls = ["pandas", "xlrd"]
-pdf = ["pdfminer.six"]
+pdf = ["pymupdf4llm"]
 outlook = ["olefile"]
 audio-transcription = ["pydub", "SpeechRecognition"]
 youtube-transcription = ["youtube-transcript-api"]
@@ -81,6 +81,7 @@ extra-dependencies = [
   "openai",
   "google-generativeai",
   "pillow",
+  "pymupdf4llm",
 ]
 
 [tool.hatch.envs.types]

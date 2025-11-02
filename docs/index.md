@@ -24,7 +24,6 @@ MarkItDown converts 15+ document formats to structured Markdown with support for
 ## 📚 Documentation Structure
 
 ### Getting Started
-- [**Installation Guide**](development/installation.md) - Setup instructions and dependency management
 - [**Quick Start**](examples/quick-start.md) - Basic usage examples and common workflows
 - [**CLI Reference**](api/cli.md) - Command-line interface documentation
 
@@ -41,8 +40,10 @@ MarkItDown converts 15+ document formats to structured Markdown with support for
 
 ### Development
 - [**Development Setup**](development/README.md) - Contributing guidelines and development workflow
+- [**Installation Guide**](development/installation.md) - Setup instructions and dependency management
 - [**Testing Guide**](development/testing.md) - Running and writing tests
 - [**Build System**](development/build.md) - Hatch build system and packaging
+- [**Docker Deployment**](development/docker.md) - Containerized deployment and production setup
 
 ## 🎯 Common Use Cases
 
@@ -128,7 +129,8 @@ markitdown/
 1. **New Users**: Start with [Installation Guide](development/installation.md) and [Quick Start](examples/quick-start.md)
 2. **Developers**: See [API Reference](api/README.md) and [Plugin Development](plugins/README.md)
 3. **Advanced Users**: Explore [Azure Integration](api/azure-doc-intel.md) and [LLM Integration](api/llm-integration.md)
-4. **Contributors**: Read [Development Setup](development/README.md) and [Testing Guide](development/testing.md)
+4. **Container Users**: See [Docker Deployment](development/docker.md) for containerized setups
+5. **Contributors**: Read [Development Setup](development/README.md) and [Testing Guide](development/testing.md)
 
 ## 📄 Additional Resources
 

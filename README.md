@@ -4,6 +4,9 @@
 ![PyPI - Downloads](https://img.shields.io/pypi/dd/markitdown)
 [![Built by AutoGen Team](https://img.shields.io/badge/Built%20by-AutoGen%20Team-blue)](https://github.com/microsoft/autogen)
 
+> [!NOTE]
+> **This is a fork of [MarkItDown](https://github.com/microsoft/markitdown)** - the original project by Microsoft's AutoGen Team. This fork is maintained by [CIOS-Technologies](https://github.com/CIOS-Technologies) and includes additional enhancements and customizations. For the original project, please visit [microsoft/markitdown](https://github.com/microsoft/markitdown).
+
 > [!TIP]
 > MarkItDown now offers an MCP (Model Context Protocol) server for integration with LLM applications like Claude Desktop. See [markitdown-mcp](https://github.com/microsoft/markitdown/tree/main/packages/markitdown-mcp) for more information.
 
@@ -68,6 +71,14 @@ conda activate markitdown
 
 To install MarkItDown, use pip: `pip install 'markitdown[all]'`. Alternatively, you can install it from the source:
 
+**To install this fork:**
+```bash
+git clone git@github.com:CIOS-Technologies/markitdown.git
+cd markitdown
+pip install -e 'packages/markitdown[all]'
+```
+
+**To install the original project:**
 ```bash
 git clone git@github.com:microsoft/markitdown.git
 cd markitdown
@@ -201,30 +212,25 @@ docker run --rm -i markitdown:latest < ~/your-file.pdf > output.md
 
 ## Contributing
 
-This project welcomes contributions and suggestions. Most contributions require you to agree to a
-Contributor License Agreement (CLA) declaring that you have the right to, and actually do, grant us
-the rights to use your contribution. For details, visit https://cla.opensource.microsoft.com.
+This is a fork of the original [MarkItDown project](https://github.com/microsoft/markitdown) by Microsoft's AutoGen Team. Contributions to this fork are welcome.
 
-When you submit a pull request, a CLA bot will automatically determine whether you need to provide
-a CLA and decorate the PR appropriately (e.g., status check, comment). Simply follow the instructions
-provided by the bot. You will only need to do this once across all repos using our CLA.
+### Contributing to This Fork
 
-This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
-For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or
-contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
+Contributions, issues, and pull requests for this fork should be directed to this repository:
+- **Repository**: [CIOS-Technologies/markitdown](https://github.com/CIOS-Technologies/markitdown)
+- **Issues**: [CIOS-Technologies/markitdown/issues](https://github.com/CIOS-Technologies/markitdown/issues)
+- **Pull Requests**: [CIOS-Technologies/markitdown/pulls](https://github.com/CIOS-Technologies/markitdown/pulls)
 
-### How to Contribute
+### Contributing to the Original Project
 
-You can help by looking at issues or helping review PRs. Any issue or PR is welcome, but we have also marked some as 'open for contribution' and 'open for reviewing' to help facilitate community contributions. These are of course just suggestions and you are welcome to contribute in any way you like.
+If you'd like to contribute to the original MarkItDown project by Microsoft, please visit:
+- **Original Repository**: [microsoft/markitdown](https://github.com/microsoft/markitdown)
+- **Original Issues**: [microsoft/markitdown/issues](https://github.com/microsoft/markitdown/issues)
+- **Original Pull Requests**: [microsoft/markitdown/pulls](https://github.com/microsoft/markitdown/pulls)
 
-<div align="center">
+The original project has contribution guidelines including a Contributor License Agreement (CLA). For details, visit https://cla.opensource.microsoft.com.
 
-|            | All                                                          | Especially Needs Help from Community                                                                                                      |
-| ---------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| **Issues** | [All Issues](https://github.com/microsoft/markitdown/issues) | [Issues open for contribution](https://github.com/microsoft/markitdown/issues?q=is%3Aissue+is%3Aopen+label%3A%22open+for+contribution%22) |
-| **PRs**    | [All PRs](https://github.com/microsoft/markitdown/pulls)     | [PRs open for reviewing](https://github.com/microsoft/markitdown/pulls?q=is%3Apr+is%3Aopen+label%3A%22open+for+reviewing%22)              |
-
-</div>
+The original project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
 
 ### Running Tests and Checks
 
@@ -254,6 +260,10 @@ You can help by looking at issues or helping review PRs. Any issue or PR is welc
 ### Contributing 3rd-party Plugins
 
 You can also contribute by creating and sharing 3rd party plugins. See `packages/markitdown-sample-plugin` for more details.
+
+## License and Attribution
+
+This fork is based on the original [MarkItDown](https://github.com/microsoft/markitdown) project by Microsoft's AutoGen Team. Please refer to the original repository for license information and attribution requirements.
 
 ## Trademarks
 
