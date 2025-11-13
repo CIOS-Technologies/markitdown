@@ -63,9 +63,19 @@ class PlainTextConverter(DocumentConverter):
         stream_info: StreamInfo,
         **kwargs: Any,  # Options to pass to the converter
     ) -> DocumentConverterResult:
+        # Read the file content once
+        file_bytes = file_stream.read()
+        
         if stream_info.charset:
-            text_content = file_stream.read().decode(stream_info.charset)
+            # Try decoding with the detected charset first
+            try:
+                text_content = file_bytes.decode(stream_info.charset)
+            except (UnicodeDecodeError, LookupError):
+                # If the detected charset fails (e.g., ASCII can't decode UTF-8 characters),
+                # fall back to charset_normalizer which is more robust
+                text_content = str(from_bytes(file_bytes).best())
         else:
-            text_content = str(from_bytes(file_stream.read()).best())
+            # No charset detected, use charset_normalizer
+            text_content = str(from_bytes(file_bytes).best())
 
         return DocumentConverterResult(markdown=text_content)

@@ -102,3 +102,6 @@ chmod +x run_markitdown.sh
 ./run_markitdown.sh test.pdf -o output.md
 ```
 
+
+
+

@@ -44,6 +44,7 @@ MarkItDown converts 15+ document formats to structured Markdown with support for
 - [**Testing Guide**](development/testing.md) - Running and writing tests
 - [**Build System**](development/build.md) - Hatch build system and packaging
 - [**Docker Deployment**](development/docker.md) - Containerized deployment and production setup
+- [**Publishing Package**](development/publishing.md) - Building and publishing pip packages
 
 ## 🎯 Common Use Cases
 

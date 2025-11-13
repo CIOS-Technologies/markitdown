@@ -121,3 +121,6 @@ markitdown/
 - **Environment**: Always activate `.venv` before working
 - **Testing**: Use `hatch test` from `packages/markitdown/` directory
 
+
+
+
