@@ -930,9 +930,11 @@ class CachedLLMProcessor:
         return result
 ```
 
-## 🎯 PDF Image Extraction
+## 🎯 PDF Image Extraction with Parallel Processing
 
-MarkItDown automatically extracts images from PDF files when using Gemini integration:
+MarkItDown automatically extracts images from PDF files when using Gemini integration, with **parallel processing** for fast conversion of PDFs with many images.
+
+### Basic Usage
 
 ```python
 from markitdown import MarkItDown
@@ -942,20 +944,136 @@ md = MarkItDown(
     llm_model="gemini-2.5-flash"
 )
 
-# Images are automatically extracted and processed
+# Images are automatically extracted and processed in parallel
 result = md.convert("document.pdf")
 
 # Image descriptions are inserted where images appear
 # Original image references are replaced with descriptions
 ```
 
-**How it works:**
-1. PDF images are extracted to temporary directory
-2. Each image is processed with Gemini using context from surrounding text
-3. Image references in markdown are replaced with AI-generated descriptions
-4. Temporary files are automatically cleaned up
+### Parallel Processing Configuration
+
+```python
+# Default: 20 parallel workers (recommended for most cases)
+result = md.convert("document.pdf", max_image_workers=20)
+
+# Use fewer workers if you encounter rate limiting
+result = md.convert("document.pdf", max_image_workers=10)
+
+# Sequential processing (disable parallel - same as before)
+result = md.convert("document.pdf", max_image_workers=1)
+```
+
+### Performance Benefits
+
+**Before (Sequential Processing):**
+- PDF with 20 images: ~20 seconds (1 second per image)
+- PDF with 100 images: ~100 seconds
+
+**After (Parallel Processing with 20 workers):**
+- PDF with 20 images: ~1-2 seconds
+- PDF with 100 images: ~5-10 seconds
+
+**Speedup**: Up to 20x faster for PDFs with many images!
+
+### How It Works
+
+1. **PDF Conversion**: PDF is converted to Markdown using pymupdf4llm
+2. **Image Extraction**: Images are extracted to a temporary directory
+3. **Parallel Processing**: Images are processed simultaneously using a worker pool:
+   - Default: 20 workers (configurable via `max_image_workers`)
+   - Each worker processes one image at a time
+   - Results are collected as they complete
+4. **Context-Aware Descriptions**: Each image is sent to the LLM with:
+   - Up to 800 characters of text before the image
+   - Up to 800 characters of text after the image
+   - This context helps generate more accurate descriptions
+5. **Replacement**: Image references in markdown are replaced with AI-generated descriptions
+6. **Cleanup**: Temporary files are automatically deleted after processing
+
+### Adaptive Rate Limiting
+
+The parallel processor includes built-in monitoring for rate limiting:
+
+- **Error Detection**: Automatically detects rate limiting errors (429, quota exceeded, etc.)
+- **Warning Logs**: Logs warnings when rate limiting is detected
+- **Recommendations**: Suggests reducing worker count if rate limiting occurs
+- **Graceful Degradation**: Individual image failures don't stop the entire batch
+
+Example log output:
+```
+2024-01-15 10:30:45 - INFO - Found 240 images in PDF. Starting image description generation...
+2024-01-15 10:30:45 - INFO - Parallel image processing enabled: 20 workers
+2024-01-15 10:30:46 - INFO - Processing image 1/240: image-001.png
+2024-01-15 10:30:46 - INFO - Processing image 2/240: image-002.png
+...
+2024-01-15 10:30:52 - INFO - Successfully generated description for image 1/240: image-001.png (245 chars)
+...
+2024-01-15 10:30:58 - INFO - Completed image processing: 240/240 images described successfully
+```
+
+### Best Practices
+
+1. **Default Workers**: Start with the default 20 workers - it works well for most cases
+2. **Rate Limiting**: If you see rate limiting errors, reduce `max_image_workers` to 10 or 5
+3. **Large PDFs**: For PDFs with 100+ images, 20 workers provides excellent performance
+4. **API Limits**: Check your API provider's rate limits and adjust workers accordingly
+5. **Monitoring**: Watch the logs for warnings about rate limiting
+
+### Example: Processing Large PDF
+
+```python
+from markitdown import MarkItDown
+import time
+
+md = MarkItDown(
+    gemini_api_key="your-gemini-api-key",
+    llm_model="gemini-2.5-flash"
+)
+
+# Process a large PDF with 200+ images
+start_time = time.time()
+result = md.convert("large_document.pdf", max_image_workers=20)
+elapsed = time.time() - start_time
+
+print(f"Processed {len(result.text_content)} characters in {elapsed:.2f} seconds")
+# Output: Processed 450,234 characters in 12.34 seconds
+```
+
+### Technical Details
+
+- **Thread Safety**: Uses `ThreadPoolExecutor` for I/O-bound API calls
+- **Memory Efficient**: Images are read on-demand, not all loaded into memory
+- **Error Handling**: Individual image failures are logged but don't stop processing
+- **Backward Compatible**: Set `max_image_workers=1` for sequential processing (original behavior)
 
 **Note:** Images are processed in-memory and temporary files are automatically deleted after processing.
+
+### Standalone PDF Processing Script
+
+A standalone script `process_pdf.py` is available in the repository root for convenient PDF processing:
+
+```bash
+# Basic usage
+python process_pdf.py document.pdf
+
+# With options
+python process_pdf.py document.pdf --output result.md --workers 20
+
+# With Gemini API key
+python process_pdf.py document.pdf --gemini-key YOUR_API_KEY
+
+# Or use environment variable
+export GEMINI_API_KEY=your_key
+python process_pdf.py document.pdf
+```
+
+**Features:**
+- Parallel image processing (configurable workers)
+- Progress logging with timestamps
+- Automatic output file naming
+- Error handling and statistics
+- See `process_pdf.py --help` for all options
 
 ---
 

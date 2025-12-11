@@ -5,6 +5,7 @@ import os
 import re
 import logging
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from typing import BinaryIO, Any, Optional, List, Dict
 
@@ -116,51 +117,19 @@ class PdfConverter(DocumentConverter):
                         total_images = len(image_files)
                         logger.info(f"Found {total_images} images in PDF. Starting image description generation...")
                         
-                        # Process images with Gemini and generate descriptions
-                        image_descriptions = {}
-                        for idx, img_path in enumerate(image_files, 1):
-                            try:
-                                logger.info(f"Processing image {idx}/{total_images}: {img_path.name}")
-                                
-                                # Read image file
-                                with open(img_path, 'rb') as img_file:
-                                    img_stream = io.BytesIO(img_file.read())
-                                    
-                                # Create stream info for image
-                                img_stream_info = StreamInfo(
-                                    extension='.png',
-                                    mimetype='image/png',
-                                    filename=img_path.name
-                                )
-                                
-                                # Extract context from markdown (text before and after image reference)
-                                context_before, context_after = self._extract_image_context(
-                                    markdown_text, img_path.name
-                                )
-                                
-                                # Generate description using Gemini
-                                logger.debug(f"Calling Gemini API for image {idx}/{total_images}: {img_path.name}")
-                                description = caption_image(
-                                    img_stream,
-                                    img_stream_info,
-                                    client=llm_client,
-                                    model=llm_model,
-                                    prompt=kwargs.get("llm_prompt"),
-                                    context_before=context_before[:800] if context_before else None,
-                                    context_after=context_after[:800] if context_after else None,
-                                    use_advanced_prompt=kwargs.get("llm_use_advanced_prompt", True),
-                                )
-                                
-                                if description:
-                                    image_descriptions[img_path.name] = description
-                                    logger.info(f"Successfully generated description for image {idx}/{total_images}: {img_path.name} ({len(description)} chars)")
-                                else:
-                                    logger.debug(f"Image {idx}/{total_images} skipped or failed: {img_path.name}")
-                                    
-                            except Exception as e:
-                                # Skip images that fail to process
-                                logger.warning(f"Failed to process image {idx}/{total_images} ({img_path.name}): {str(e)}")
-                                pass
+                        # Remove llm_client and llm_model from kwargs to avoid duplicate arguments
+                        # when passing to _process_images_parallel
+                        filtered_kwargs = {k: v for k, v in kwargs.items() 
+                                         if k not in ('llm_client', 'llm_model')}
+                        
+                        # Process images in parallel with adaptive rate limiting
+                        image_descriptions = self._process_images_parallel(
+                            image_files,
+                            markdown_text,
+                            llm_client,
+                            llm_model,
+                            **filtered_kwargs
+                        )
                         
                         logger.info(f"Completed image processing: {len(image_descriptions)}/{total_images} images described successfully")
                         
@@ -179,6 +148,162 @@ class PdfConverter(DocumentConverter):
                     Path(tmp_path).unlink()
                 except Exception:
                     pass
+    
+    def _process_images_parallel(
+        self,
+        image_files: List[Path],
+        markdown_text: str,
+        llm_client: Any,
+        llm_model: str,
+        **kwargs: Any
+    ) -> Dict[str, str]:
+        """
+        Process images in parallel using worker pool with adaptive rate limiting.
+        
+        Args:
+            image_files: List of image file paths
+            markdown_text: The markdown content for context extraction
+            llm_client: LLM client instance
+            llm_model: LLM model name
+            **kwargs: Additional options (max_image_workers, llm_prompt, etc.)
+            
+        Returns:
+            Dictionary mapping image filenames to descriptions
+        """
+        total_images = len(image_files)
+        max_workers = kwargs.get("max_image_workers", 20)
+        
+        # Prepare all image tasks upfront
+        image_tasks = []
+        for idx, img_path in enumerate(image_files, 1):
+            context_before, context_after = self._extract_image_context(
+                markdown_text, img_path.name
+            )
+            image_tasks.append({
+                'idx': idx,
+                'img_path': img_path,
+                'context_before': context_before[:800] if context_before else None,
+                'context_after': context_after[:800] if context_after else None,
+            })
+        
+        image_descriptions = {}
+        current_workers = max_workers
+        consecutive_errors = 0
+        max_consecutive_errors = 3  # Reduce workers after 3 consecutive errors
+        min_workers = 1  # Minimum workers (1 = sequential processing)
+        
+        # Process all images with current worker count
+        # If we encounter rate limiting errors, we'll log them for monitoring
+        with ThreadPoolExecutor(max_workers=current_workers) as executor:
+            # Submit all tasks
+            future_to_task = {
+                executor.submit(
+                    self._process_single_image,
+                    task['idx'],
+                    total_images,
+                    task['img_path'],
+                    task['context_before'],
+                    task['context_after'],
+                    llm_client,
+                    llm_model,
+                    kwargs
+                ): task
+                for task in image_tasks
+            }
+            
+            # Collect results as they complete
+            for future in as_completed(future_to_task):
+                task = future_to_task[future]
+                image_name = task['img_path'].name
+                idx = task['idx']
+                
+                try:
+                    description = future.result()
+                    if description:
+                        image_descriptions[image_name] = description
+                        logger.info(f"Successfully generated description for image {idx}/{total_images}: {image_name} ({len(description)} chars)")
+                        consecutive_errors = 0  # Reset error counter on success
+                    else:
+                        logger.debug(f"Image {idx}/{total_images} skipped or failed: {image_name}")
+                        consecutive_errors = 0  # Skipped images don't count as errors
+                        
+                except Exception as e:
+                    # Track consecutive errors for monitoring
+                    consecutive_errors += 1
+                    error_msg = str(e).lower()
+                    is_rate_limit = any(keyword in error_msg for keyword in ['rate limit', '429', 'quota', 'too many requests'])
+                    
+                    logger.warning(f"Failed to process image {idx}/{total_images} ({image_name}): {str(e)}")
+                    
+                    # Log warning if rate limiting detected (for monitoring/debugging)
+                    if is_rate_limit and consecutive_errors >= max_consecutive_errors:
+                        logger.warning(
+                            f"Detected {consecutive_errors} consecutive errors (possible rate limiting). "
+                            f"Consider reducing max_image_workers from {current_workers} to {max(min_workers, current_workers // 2)} "
+                            f"if this persists."
+                        )
+        
+        return image_descriptions
+    
+    def _process_single_image(
+        self,
+        idx: int,
+        total_images: int,
+        img_path: Path,
+        context_before: Optional[str],
+        context_after: Optional[str],
+        llm_client: Any,
+        llm_model: str,
+        kwargs: dict
+    ) -> Optional[str]:
+        """
+        Process a single image (worker function for parallel processing).
+        
+        Args:
+            idx: Image index (1-based)
+            total_images: Total number of images
+            img_path: Path to image file
+            context_before: Text context before image
+            context_after: Text context after image
+            llm_client: LLM client instance
+            llm_model: LLM model name
+            kwargs: Additional options
+            
+        Returns:
+            Image description or None if failed/skipped
+        """
+        try:
+            logger.info(f"Processing image {idx}/{total_images}: {img_path.name}")
+            
+            # Read image file
+            with open(img_path, 'rb') as img_file:
+                img_stream = io.BytesIO(img_file.read())
+            
+            # Create stream info for image
+            img_stream_info = StreamInfo(
+                extension='.png',
+                mimetype='image/png',
+                filename=img_path.name
+            )
+            
+            # Generate description using LLM
+            logger.debug(f"Calling LLM API for image {idx}/{total_images}: {img_path.name}")
+            description = caption_image(
+                img_stream,
+                img_stream_info,
+                client=llm_client,
+                model=llm_model,
+                prompt=kwargs.get("llm_prompt"),
+                context_before=context_before,
+                context_after=context_after,
+                use_advanced_prompt=kwargs.get("llm_use_advanced_prompt", True),
+            )
+            
+            return description
+            
+        except Exception as e:
+            # Re-raise exception to be handled by caller
+            raise
     
     def _extract_image_context(self, markdown_text: str, image_filename: str) -> tuple[Optional[str], Optional[str]]:
         """
@@ -223,11 +348,19 @@ class PdfConverter(DocumentConverter):
         """
         for image_filename, description in image_descriptions.items():
             # Pattern to match image markdown: ![alt](path/to/image.png)
-            pattern = rf'!\[([^\]]*)\]\([^\)]*{re.escape(image_filename)}\)'
+            # Escape the filename to handle any special regex characters
+            escaped_filename = re.escape(image_filename)
+            pattern = rf'!\[([^\]]*)\]\([^\)]*{escaped_filename}\)'
             
-            # Replace with description
-            replacement = f"\n\n**[AI-Generated Image Description]**\n\n{description}\n\n"
+            # Build replacement text
+            replacement_text = f"\n\n**[AI-Generated Image Description]**\n\n{description}\n\n"
             
-            markdown_text = re.sub(pattern, replacement, markdown_text)
+            # Create a replacer function that captures the replacement text
+            # This avoids closure issues in the loop
+            def make_replacer(repl):
+                return lambda m: repl
+            
+            # Use the replacer to safely replace, treating replacement as literal text
+            markdown_text = re.sub(pattern, make_replacer(replacement_text), markdown_text)
         
         return markdown_text

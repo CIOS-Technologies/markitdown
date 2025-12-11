@@ -18,6 +18,7 @@ MarkItDown converts 15+ document formats to structured Markdown with support for
 - 🔧 **Extensible**: Plugin architecture for third-party converters
 - 🌊 **Stream Processing**: Efficient binary stream handling with no temporary files
 - 🤖 **AI Integration**: LLM-powered image descriptions and Azure Document Intelligence
+- ⚡ **Parallel Processing**: Multi-worker parallel image processing for fast PDF conversion
 - 🐳 **Production Ready**: Docker support, comprehensive testing, enterprise-grade quality
 - 🔌 **MCP Server**: Model Context Protocol support for LLM applications
 
@@ -26,6 +27,7 @@ MarkItDown converts 15+ document formats to structured Markdown with support for
 ### Getting Started
 - [**Quick Start**](examples/quick-start.md) - Basic usage examples and common workflows
 - [**CLI Reference**](api/cli.md) - Command-line interface documentation
+- [**PDF Processing Script**](../process_pdf.py) - Standalone script for PDF conversion with parallel image processing
 
 ### Core Documentation
 - [**Architecture Overview**](architecture/overview.md) - System design and component relationships
@@ -66,6 +68,9 @@ md = MarkItDown(llm_client=client, llm_model="gpt-4o")
 
 # With Gemini LLM integration for images (recommended)
 md = MarkItDown(gemini_api_key="your-gemini-api-key", llm_model="gemini-2.5-flash")
+
+# With parallel image processing (up to 20 workers by default)
+result = md.convert("document.pdf", max_image_workers=20)
 
 # With Azure Document Intelligence
 md = MarkItDown(docintel_endpoint="your-endpoint")

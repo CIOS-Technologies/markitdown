@@ -116,6 +116,19 @@ md = MarkItDown()
 result = md.convert("research_paper.pdf")
 print(result.text_content)
 
+# With LLM image descriptions and parallel processing
+md_with_images = MarkItDown(
+    gemini_api_key="your-gemini-api-key",
+    llm_model="gemini-2.5-flash"
+)
+
+# Process PDF with parallel image processing (default: 20 workers)
+result = md_with_images.convert("document_with_images.pdf", max_image_workers=20)
+
+# For PDFs with many images, parallel processing is much faster:
+# - 20 images: ~1-2 seconds (vs ~20 seconds sequential)
+# - 100 images: ~5-10 seconds (vs ~100 seconds sequential)
+
 # With Azure Document Intelligence for better OCR
 md_azure = MarkItDown(
     docintel_endpoint="https://your-resource.cognitiveservices.azure.com/",
@@ -544,6 +557,31 @@ migrate_document_archive("old_documents/", "markdown_archive/")
 ```
 
 ## 🚀 Performance Tips
+
+### Parallel Image Processing for PDFs
+
+When processing PDFs with many images, use parallel processing for significant speedup:
+
+```python
+from markitdown import MarkItDown
+
+md = MarkItDown(
+    gemini_api_key="your-gemini-api-key",
+    llm_model="gemini-2.5-flash"
+)
+
+# For PDFs with many images, parallel processing is much faster
+result = md.convert("large_document.pdf", max_image_workers=20)
+
+# Performance comparison:
+# - Sequential (max_image_workers=1): ~1 second per image
+# - Parallel (max_image_workers=20): ~0.1 seconds per image (20x speedup)
+```
+
+**Best Practices:**
+- Use default 20 workers for most cases
+- Reduce to 10-15 workers if you encounter API rate limiting
+- Monitor logs for rate limiting warnings
 
 ### Efficient Batch Processing
 

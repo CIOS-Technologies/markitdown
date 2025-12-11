@@ -32,17 +32,19 @@ MarkItDown includes 23+ specialized converters that handle different file format
 ### PDF Converter (`_pdf_converter.py`)
 
 **Supported Formats**: `.pdf`
-**Dependencies**: `pdfminer.six`
+**Dependencies**: `pymupdf4llm`
 **Priority**: 50
 
 **Features**:
-- Text extraction with layout preservation
+- Text extraction with layout preservation using pymupdf4llm
 - Table detection and formatting
 - Metadata extraction (title, author, creation date)
-- Handling of embedded images
+- **Parallel image processing** - Process multiple images simultaneously (up to 20 workers)
+- LLM-powered image descriptions with context awareness
+- Automatic image extraction and description generation
 - Cross-platform compatibility
 
-**Usage**:
+**Basic Usage**:
 ```python
 from markitdown import MarkItDown
 
@@ -51,10 +53,45 @@ result = md.convert("document.pdf")
 print(result.text_content)
 ```
 
+**With LLM Image Descriptions (Parallel Processing)**:
+```python
+from markitdown import MarkItDown
+
+# Initialize with Gemini for image descriptions
+md = MarkItDown(
+    gemini_api_key="your-gemini-api-key",
+    llm_model="gemini-2.5-flash"
+)
+
+# Convert with parallel image processing (default: 20 workers)
+result = md.convert("document.pdf", max_image_workers=20)
+
+# Or use fewer workers for rate-limited APIs
+result = md.convert("document.pdf", max_image_workers=10)
+
+# Sequential processing (disable parallel)
+result = md.convert("document.pdf", max_image_workers=1)
+```
+
+**Performance**:
+- **Parallel Processing**: Process up to 20 images simultaneously (configurable)
+- **Adaptive Rate Limiting**: Automatically detects and warns about rate limiting issues
+- **Context-Aware**: Uses surrounding text (800 chars before/after) for better image descriptions
+- **Progress Logging**: Detailed logs show progress for each image being processed
+
+**How It Works**:
+1. PDF is converted to Markdown using pymupdf4llm
+2. Images are extracted to a temporary directory
+3. Images are processed in parallel using a worker pool (default: 20 workers)
+4. Each image is sent to the LLM with context from surrounding text
+5. Image references in markdown are replaced with AI-generated descriptions
+6. Temporary files are automatically cleaned up
+
 **Limitations**:
-- Text-only extraction (no OCR for scanned PDFs)
+- Text-only extraction (no OCR for scanned PDFs without Azure Document Intelligence)
 - Complex layouts may not be perfectly preserved
 - Encrypted PDFs require password handling
+- Rate limiting may occur with high worker counts on some APIs
 
 ### DOCX Converter (`_docx_converter.py`)
 

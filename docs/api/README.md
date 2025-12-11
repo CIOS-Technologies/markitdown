@@ -47,6 +47,14 @@ md = MarkItDown(
 | `llm_prompt` | `str` | `None` | Custom prompt for LLM descriptions |
 | `gemini_api_key` | `str` | `None` | Google Gemini API key (alternative to llm_client) |
 
+**convert() Method Parameters** (passed via `**kwargs`):
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `max_image_workers` | `int` | `20` | Maximum parallel workers for PDF image processing (1 = sequential) |
+| `llm_prompt` | `str` | `None` | Custom prompt for LLM image descriptions |
+| `llm_use_advanced_prompt` | `bool` | `True` | Use advanced context-aware prompts for images |
+
 #### Main Methods
 
 ##### convert()
@@ -56,12 +64,17 @@ Convert a document to Markdown.
 ```python
 def convert(
     self,
-    source: Union[str, Path, BinaryIO]
+    source: Union[str, Path, BinaryIO],
+    **kwargs: Any
 ) -> DocumentConverterResult:
     """Convert a document to Markdown.
 
     Args:
         source: File path, Path object, or binary stream
+        **kwargs: Additional options passed to converters:
+            - max_image_workers (int): Maximum parallel workers for PDF image processing (default: 20)
+            - llm_prompt (str): Custom prompt for LLM image descriptions
+            - llm_use_advanced_prompt (bool): Use advanced context-aware prompts (default: True)
 
     Returns:
         DocumentConverterResult with converted content and metadata
@@ -86,6 +99,10 @@ result = md.convert(Path("presentation.pptx"))
 # Convert from binary stream
 with open("image.jpg", "rb") as stream:
     result = md.convert(stream)
+
+# PDF with parallel image processing
+md = MarkItDown(gemini_api_key="your-key", llm_model="gemini-2.5-flash")
+result = md.convert("document.pdf", max_image_workers=20)  # Process 20 images in parallel
 ```
 
 ##### convert_stream()
