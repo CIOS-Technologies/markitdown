@@ -1,9 +1,13 @@
 from typing import BinaryIO, Union, Optional
 import base64
 import mimetypes
+import logging
 from PIL import Image
 import io
 from .._stream_info import StreamInfo
+
+# Set up logging for Gemini captioning
+logger = logging.getLogger(__name__)
 
 # Try to import Gemini SDK
 GEMINI_AVAILABLE = False
@@ -143,6 +147,9 @@ def gemini_caption(
         
         # Call Gemini API using google.generativeai
         # Create model and generate content
+        image_filename = stream_info.filename or "unknown"
+        logger.debug(f"Calling Gemini API (model: {model}) for image: {image_filename}")
+        
         gemini_model = genai_module.GenerativeModel(model)
         
         generation_config = {
@@ -152,12 +159,17 @@ def gemini_caption(
             "max_output_tokens": 8192,
         }
         
-        response = gemini_model.generate_content(
-            [full_prompt, img],
-            generation_config=generation_config
-        )
-        
-        description = response.text.strip()
+        try:
+            response = gemini_model.generate_content(
+                [full_prompt, img],
+                generation_config=generation_config
+            )
+            
+            description = response.text.strip()
+            logger.debug(f"Received response from Gemini API for {image_filename} ({len(description)} chars)")
+        except Exception as api_error:
+            logger.warning(f"Gemini API call failed for {image_filename}: {str(api_error)}")
+            raise
         
         # Check if Gemini skipped this image
         if description.upper().startswith("SKIP:"):

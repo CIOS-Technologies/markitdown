@@ -3,6 +3,7 @@ import io
 import tempfile
 import os
 import re
+import logging
 from pathlib import Path
 
 from typing import BinaryIO, Any, Optional, List, Dict
@@ -12,6 +13,9 @@ from .._base_converter import DocumentConverter, DocumentConverterResult
 from .._stream_info import StreamInfo
 from .._exceptions import MissingDependencyException, MISSING_DEPENDENCY_MESSAGE
 from ._llm_providers import caption_image
+
+# Set up logging for PDF conversion
+logger = logging.getLogger(__name__)
 
 
 # Try loading optional (but in this case, required) dependencies
@@ -109,10 +113,15 @@ class PdfConverter(DocumentConverter):
                     image_files = sorted(Path(image_dir).glob("*.png"))
                     
                     if image_files:
+                        total_images = len(image_files)
+                        logger.info(f"Found {total_images} images in PDF. Starting image description generation...")
+                        
                         # Process images with Gemini and generate descriptions
                         image_descriptions = {}
-                        for img_path in image_files:
+                        for idx, img_path in enumerate(image_files, 1):
                             try:
+                                logger.info(f"Processing image {idx}/{total_images}: {img_path.name}")
+                                
                                 # Read image file
                                 with open(img_path, 'rb') as img_file:
                                     img_stream = io.BytesIO(img_file.read())
@@ -130,6 +139,7 @@ class PdfConverter(DocumentConverter):
                                 )
                                 
                                 # Generate description using Gemini
+                                logger.debug(f"Calling Gemini API for image {idx}/{total_images}: {img_path.name}")
                                 description = caption_image(
                                     img_stream,
                                     img_stream_info,
@@ -143,10 +153,16 @@ class PdfConverter(DocumentConverter):
                                 
                                 if description:
                                     image_descriptions[img_path.name] = description
+                                    logger.info(f"Successfully generated description for image {idx}/{total_images}: {img_path.name} ({len(description)} chars)")
+                                else:
+                                    logger.debug(f"Image {idx}/{total_images} skipped or failed: {img_path.name}")
                                     
-                            except Exception:
+                            except Exception as e:
                                 # Skip images that fail to process
+                                logger.warning(f"Failed to process image {idx}/{total_images} ({img_path.name}): {str(e)}")
                                 pass
+                        
+                        logger.info(f"Completed image processing: {len(image_descriptions)}/{total_images} images described successfully")
                         
                         # Replace image markdown references with descriptions
                         if image_descriptions:
