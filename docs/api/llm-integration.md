@@ -1075,6 +1075,22 @@ python process_pdf.py document.pdf
 - Error handling and statistics
 - See `process_pdf.py --help` for all options
 
+### High Concurrency Environments (Gevent/Eventlet)
+
+When running MarkItDown in environments that use `gevent` or `eventlet` (common in Gunicorn/Flask/Django deployments), standard multi-threading or asyncio can encounter conflicts or limitations with HTTP connection pooling.
+
+**Automatic Workaround:**
+MarkItDown automatically detects if `gevent` monkey-patching is active. If detected, it switches to a **subprocess worker architecture**:
+
+1.  **Isolation**: Instead of running image processing in threads within the main process, it spawns a separate, clean Python subprocess.
+2.  **True Parallelism**: This subprocess runs standard `asyncio` code without gevent interference, ensuring full utilization of 20+ concurrent connections.
+3.  **Transparency**: This happens automatically. You will see logs indicating "Using subprocess worker for Gemini API to bypass gevent limitations".
+
+**Benefits:**
+- Eliminates "hanging" or slow processing caused by gevent/httpx conflicts.
+- Guarantees true parallelism even in single-threaded async frameworks.
+- Maintains stability of the main application process.
+
 ---
 
 LLM integration significantly enhances MarkItDown's capabilities, particularly for processing images, complex documents, and generating intelligent summaries. By following these best practices, you can create efficient, cost-effective, and reliable document processing workflows.

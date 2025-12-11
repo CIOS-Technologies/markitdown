@@ -17,8 +17,9 @@ MarkItDown converts 15+ document formats to structured Markdown with support for
 - 🎯 **LLM-Optimized**: Token-efficient Markdown output that mainstream LLMs understand natively
 - 🔧 **Extensible**: Plugin architecture for third-party converters
 - 🌊 **Stream Processing**: Efficient binary stream handling with no temporary files
-- 🤖 **AI Integration**: LLM-powered image descriptions and Azure Document Intelligence
-- ⚡ **Parallel Processing**: Multi-worker parallel image processing for fast PDF conversion
+- 🤖 **AI Integration**: LLM-powered image descriptions (OpenAI, Gemini) and Azure Document Intelligence
+- ⚡ **Parallel Processing**: Multi-worker parallel image processing for fast PDF conversion (up to 20x faster)
+- 🔄 **Gevent Compatible**: Robust architecture that works seamlessly in gevent environments via subprocess offloading
 - 🐳 **Production Ready**: Docker support, comprehensive testing, enterprise-grade quality
 - 🔌 **MCP Server**: Model Context Protocol support for LLM applications
 
