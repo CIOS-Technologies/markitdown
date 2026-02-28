@@ -68,6 +68,27 @@ PYMUPDF4LLM_KWARGS = {
 PDF_CONVERTER_KWARGS = {"llm_client", "llm_model", "max_image_workers", "llm_prompt", "llm_use_advanced_prompt"}
 
 
+def _pdf_to_text_fitz_fallback(pdf_path: str) -> str:
+    """
+    Last-resort PDF text extraction using PyMuPDF (fitz) when pymupdf4llm fails.
+    Returns plain text from all pages (no images, no layout). Used when
+    pymupdf4llm raises min() iterable argument is empty even with no kwargs.
+    """
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        raise ValueError("PyMuPDF (fitz) is required for PDF fallback but could not be imported")
+    doc = fitz.open(pdf_path)
+    try:
+        parts = []
+        for i in range(len(doc)):
+            page = doc.load_page(i)
+            parts.append(page.get_text())
+        return "\n\n".join(parts)
+    finally:
+        doc.close()
+
+
 class PdfConverter(DocumentConverter):
     """
     Converts PDFs to Markdown using pymupdf4llm.
@@ -135,6 +156,13 @@ class PdfConverter(DocumentConverter):
             tmp_file.write(file_stream.read())
             tmp_path = tmp_file.name
         
+        def _read_pdf_into_fresh_temp():
+            """Write stream into a new temp file (for retry after failure)."""
+            file_stream.seek(0)
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tf:
+                tf.write(file_stream.read())
+                return tf.name
+        
         # Create temporary directory for extracted images (or use image_path if provided)
         image_dir_cleanup = None
         if kwargs.get("image_path"):
@@ -146,6 +174,7 @@ class PdfConverter(DocumentConverter):
             image_dir_cleanup = tempfile.TemporaryDirectory()
             image_dir_str = image_dir_cleanup.name
         image_dir = image_dir_str
+        retry_tmp_path = None  # Set if we retry after empty-iterable error; cleaned in finally
         try:
                 # Build options for pymupdf4llm.to_markdown().
                 # Pass through allowed layout/format kwargs for multi-column and layout tuning.
@@ -169,8 +198,31 @@ class PdfConverter(DocumentConverter):
                     to_md_kwargs = {k: v for k, v in to_md_kwargs.items() if k in allowed}
                 except Exception:
                     pass
-                # Extract markdown and images using pymupdf4llm
-                raw_result = pymupdf4llm.to_markdown(tmp_path, **to_md_kwargs)
+                # Extract markdown and images using pymupdf4llm.
+                # Some PDFs trigger "min() iterable argument is empty" with layout or image options;
+                # retry with path-only on a fresh temp file to get at least the text.
+                raw_result = None
+                try:
+                    raw_result = pymupdf4llm.to_markdown(tmp_path, **to_md_kwargs)
+                except ValueError as e:
+                    if "min()" in str(e) and "empty" in str(e).lower():
+                        logger.warning(
+                            "pymupdf4llm failed with empty iterable. "
+                            "Retrying with path-only on a fresh temp file to extract text."
+                        )
+                        retry_tmp_path = _read_pdf_into_fresh_temp()
+                        try:
+                            raw_result = pymupdf4llm.to_markdown(retry_tmp_path)
+                        except ValueError as e2:
+                            if "min()" in str(e2) and "empty" in str(e2).lower():
+                                logger.warning(
+                                    "pymupdf4llm retry also failed. Using PyMuPDF (fitz) as last resort for text extraction."
+                                )
+                                raw_result = _pdf_to_text_fitz_fallback(retry_tmp_path)
+                            else:
+                                raise
+                    else:
+                        raise
                 # When page_chunks=True, result is list of dicts; normalize to single markdown string
                 if isinstance(raw_result, list):
                     markdown_text = "\n\n".join(
@@ -224,11 +276,17 @@ class PdfConverter(DocumentConverter):
                     markdown=markdown_text,
                 )
         finally:
-            # Clean up temporary PDF file
+            # Critical for cloud/containers: always remove temp files and our temp image dir
+            # so we don't leave garbage on disk when called from e.g. ai_personality book upload.
             try:
-                Path(tmp_path).unlink()
+                Path(tmp_path).unlink(missing_ok=True)
             except Exception:
                 pass
+            if retry_tmp_path is not None:
+                try:
+                    Path(retry_tmp_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
             # Clean up temp image dir only if we created it (not user-provided image_path)
             if image_dir_cleanup is not None:
                 try:
