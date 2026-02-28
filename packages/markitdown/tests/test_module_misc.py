@@ -721,19 +721,20 @@ def test_markitdown_gemini_context_extraction() -> None:
 
 
 def test_markitdown_gemini_image_replacement() -> None:
-    """Test replacement of image references with descriptions."""
+    """Test replacement of image references with descriptions (description + original link kept)."""
     from markitdown.converters._pdf_converter import PdfConverter
-    
+
     converter = PdfConverter()
-    
+
     markdown_text = "![Chart](images/chart1.png)"
     descriptions = {"chart1.png": "This is a bar chart showing quarterly sales data."}
-    
+
     result = converter._replace_images_with_descriptions(markdown_text, descriptions)
-    
+
     assert "**[AI-Generated Image Description]**" in result
     assert "bar chart" in result.lower()
-    assert "![Chart]" not in result  # Original reference should be replaced
+    # Converter keeps the original image link after the description so they stay together
+    assert "![Chart](images/chart1.png)" in result
 
 
 @pytest.mark.skipif(

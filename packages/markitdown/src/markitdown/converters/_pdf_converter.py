@@ -32,6 +32,21 @@ except ImportError:
     # Preserve the error and stack trace for later
     _dependency_exc_info = sys.exc_info()
 
+# Optional: enable PyMuPDF Layout for better multi-column and layout detection.
+# When pymupdf.layout is imported before pymupdf4llm, to_markdown() uses the
+# Layout code path, which improves reading order on multi-column pages.
+# See: https://pymupdf.readthedocs.io/en/latest/pymupdf4llm/
+_layout_imported = False
+if _dependency_exc_info is None:
+    try:
+        import pymupdf.layout  # noqa: F401
+        _layout_imported = True
+        logging.getLogger(__name__).debug(
+            "pymupdf.layout imported for improved PDF multi-column/layout handling"
+        )
+    except ImportError:
+        pass
+
 
 ACCEPTED_MIME_TYPE_PREFIXES = [
     "application/pdf",
@@ -40,12 +55,36 @@ ACCEPTED_MIME_TYPE_PREFIXES = [
 
 ACCEPTED_FILE_EXTENSIONS = [".pdf"]
 
+# pymupdf4llm.to_markdown() parameters that can be passed through from convert(**kwargs).
+# Used to tune layout/reading order (e.g. margins, page_chunks) for multi-column PDFs.
+# See https://pymupdf.readthedocs.io/en/latest/pymupdf4llm/api.html
+PYMUPDF4LLM_KWARGS = {
+    "margins", "page_chunks", "page_separators", "table_strategy",
+    "detect_bg_color", "page_width", "page_height", "header", "footer",
+    "fontsize_limit", "force_text", "write_images", "image_path", "image_format",
+    "dpi", "pages", "show_progress",
+}
+# Our own kwargs - never forward these to pymupdf4llm
+PDF_CONVERTER_KWARGS = {"llm_client", "llm_model", "max_image_workers", "llm_prompt", "llm_use_advanced_prompt"}
+
 
 class PdfConverter(DocumentConverter):
     """
     Converts PDFs to Markdown using pymupdf4llm.
     Provides better markdown structure (headings, links) than pdfminer.
     Supports image extraction and AI-powered descriptions via Gemini.
+
+    Multi-column pages: Reading order is determined by pymupdf4llm (and
+    optionally PyMuPDF Layout if available). If column order is wrong on some
+    pages, try passing margins=0 or page_chunks=True in convert(**kwargs), or
+    ensure pymupdf (with layout support) is installed for improved layout detection.
+
+    Page headers/footers: Only supported when PyMuPDF Layout is used. Pass
+    header=False, footer=False in convert(**kwargs) to exclude them (if your
+    pymupdf4llm version supports these parameters).
+
+    Keeping extracted images: Pass image_path=/some/dir in convert(**kwargs) to
+    save extracted PNGs there (otherwise a temp dir is used and deleted after).
     """
 
     def accepts(
@@ -96,17 +135,50 @@ class PdfConverter(DocumentConverter):
             tmp_file.write(file_stream.read())
             tmp_path = tmp_file.name
         
-        # Create temporary directory for extracted images
-        with tempfile.TemporaryDirectory() as image_dir:
-            try:
+        # Create temporary directory for extracted images (or use image_path if provided)
+        image_dir_cleanup = None
+        if kwargs.get("image_path"):
+            image_dir = Path(kwargs["image_path"])
+            image_dir.mkdir(parents=True, exist_ok=True)
+            image_dir_str = str(image_dir)
+            logger.info(f"PDF converter - Extracted images will be saved to: {image_dir_str}")
+        else:
+            image_dir_cleanup = tempfile.TemporaryDirectory()
+            image_dir_str = image_dir_cleanup.name
+        image_dir = image_dir_str
+        try:
+                # Build options for pymupdf4llm.to_markdown().
+                # Pass through allowed layout/format kwargs for multi-column and layout tuning.
+                to_md_kwargs: Dict[str, Any] = {
+                    "write_images": True,
+                    "image_path": str(image_dir),
+                    "image_format": "png",
+                }
+                for key in PYMUPDF4LLM_KWARGS:
+                    if key not in PDF_CONVERTER_KWARGS and key in kwargs:
+                        to_md_kwargs[key] = kwargs[key]
+                # header/footer are only supported when PyMuPDF Layout is used; omit if not accepted
+                if kwargs.get("header") is not None or kwargs.get("footer") is not None:
+                    to_md_kwargs["header"] = kwargs.get("header", True)
+                    to_md_kwargs["footer"] = kwargs.get("footer", True)
+                # Only pass kwargs that to_markdown() accepts (avoids TypeError on older pymupdf4llm)
+                try:
+                    import inspect
+                    sig = inspect.signature(pymupdf4llm.to_markdown)
+                    allowed = set(sig.parameters)
+                    to_md_kwargs = {k: v for k, v in to_md_kwargs.items() if k in allowed}
+                except Exception:
+                    pass
                 # Extract markdown and images using pymupdf4llm
-                markdown_text = pymupdf4llm.to_markdown(
-                    tmp_path,
-                    write_images=True,  # Extract images
-                    image_path=str(image_dir),  # Save location
-                    image_format="png"
-                )
-                
+                raw_result = pymupdf4llm.to_markdown(tmp_path, **to_md_kwargs)
+                # When page_chunks=True, result is list of dicts; normalize to single markdown string
+                if isinstance(raw_result, list):
+                    markdown_text = "\n\n".join(
+                        chunk.get("text", "") for chunk in raw_result if isinstance(chunk, dict)
+                    )
+                else:
+                    markdown_text = raw_result
+
                 # Check if LLM client is available for image descriptions
                 llm_client = kwargs.get("llm_client")
                 llm_model = kwargs.get("llm_model")
@@ -151,10 +223,16 @@ class PdfConverter(DocumentConverter):
                 return DocumentConverterResult(
                     markdown=markdown_text,
                 )
-            finally:
-                # Clean up temporary PDF file
+        finally:
+            # Clean up temporary PDF file
+            try:
+                Path(tmp_path).unlink()
+            except Exception:
+                pass
+            # Clean up temp image dir only if we created it (not user-provided image_path)
+            if image_dir_cleanup is not None:
                 try:
-                    Path(tmp_path).unlink()
+                    image_dir_cleanup.cleanup()
                 except Exception:
                     pass
     
@@ -715,29 +793,43 @@ class PdfConverter(DocumentConverter):
     def _replace_images_with_descriptions(self, markdown_text: str, image_descriptions: Dict[str, str]) -> str:
         """
         Replace image markdown references with AI-generated descriptions.
-        
+        Descriptions are inserted in document order and the original image link
+        is kept immediately after each description so they stay adjacent.
+
         Args:
             markdown_text: The markdown content with image references
             image_descriptions: Dictionary mapping image filenames to descriptions
-            
+
         Returns:
-            Updated markdown text with descriptions
+            Updated markdown text with descriptions (and original links kept after each)
         """
-        for image_filename, description in image_descriptions.items():
-            # Pattern to match image markdown: ![alt](path/to/image.png)
-            # Escape the filename to handle any special regex characters
-            escaped_filename = re.escape(image_filename)
-            pattern = rf'!\[([^\]]*)\]\([^\)]*{escaped_filename}\)'
-            
-            # Build replacement text
-            replacement_text = f"\n\n**[AI-Generated Image Description]**\n\n{description}\n\n"
-            
-            # Create a replacer function that captures the replacement text
-            # This avoids closure issues in the loop
-            def make_replacer(repl):
-                return lambda m: repl
-            
-            # Use the replacer to safely replace, treating replacement as literal text
-            markdown_text = re.sub(pattern, make_replacer(replacement_text), markdown_text)
-        
-        return markdown_text
+        if not image_descriptions:
+            return markdown_text
+
+        # Match any markdown image: ![alt](path). Path can contain / or \.
+        image_ref_pattern = re.compile(r'!\[([^\]]*)\]\(([^\)]+)\)')
+        parts = []
+        last_end = 0
+
+        for match in image_ref_pattern.finditer(markdown_text):
+            full_match = match.group(0)
+            path = match.group(2).strip()
+            # Filename is the last path component (avoids matching "img.png" inside "myimg.png")
+            filename = path.replace("\\", "/").split("/")[-1]
+
+            if filename not in image_descriptions:
+                continue
+
+            description = image_descriptions[filename]
+            # Insert description block then keep the original image link so they stay together
+            replacement = (
+                f"\n\n**[AI-Generated Image Description]**\n\n{description}\n\n"
+                + full_match
+            )
+
+            parts.append(markdown_text[last_end : match.start()])
+            parts.append(replacement)
+            last_end = match.end()
+
+        parts.append(markdown_text[last_end:])
+        return "".join(parts)

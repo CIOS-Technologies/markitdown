@@ -6,7 +6,7 @@ MarkItDown includes 23+ specialized converters that handle different file format
 
 | Category | Converter | File Types | Dependencies | Priority | Special Features |
 |----------|-----------|------------|--------------|----------|------------------|
-| **Documents** | PDF Converter | `.pdf` | `pdfminer.six` | 50 | Text extraction, layout preservation |
+| **Documents** | PDF Converter | `.pdf` | `pymupdf4llm` | 50 | Text extraction, layout preservation, multi-column (see note) |
 | **Documents** | DOCX Converter | `.docx`, `.dotx` | `mammoth`, `lxml` | 50 | Style preservation, image extraction |
 | **Documents** | PPTX Converter | `.pptx`, `.pptm` | `python-pptx` | 50 | Slide structure, LLM image descriptions |
 | **Documents** | XLSX Converter | `.xlsx`, `.xlsm` | `pandas`, `openpyxl` | 50 | Multiple sheets, formula display |
@@ -53,6 +53,14 @@ result = md.convert("document.pdf")
 print(result.text_content)
 ```
 
+**Multi-column / layout tuning** (if block order is wrong on some pages):
+```python
+# Try full-page margins (can help with column detection)
+result = md.convert("document.pdf", margins=0)
+# Or request per-page chunks (layout-dependent); result is still a single markdown string
+result = md.convert("document.pdf", page_chunks=True)
+```
+
 **With LLM Image Descriptions (Parallel Processing)**:
 ```python
 from markitdown import MarkItDown
@@ -84,11 +92,12 @@ result = md.convert("document.pdf", max_image_workers=1)
 2. Images are extracted to a temporary directory
 3. Images are processed in parallel using a worker pool (default: 20 workers)
 4. Each image is sent to the LLM with context from surrounding text
-5. Image references in markdown are replaced with AI-generated descriptions
+5. Image references are replaced in document order: **[AI-Generated Image Description]** + description text, then the original image link is kept so the link stays next to its description
 6. Temporary files are automatically cleaned up
 
 **Limitations**:
 - Text-only extraction (no OCR for scanned PDFs without Azure Document Intelligence)
+- **Multi-column PDFs**: Reading order on some pages (e.g. journal articles) may be wrong (second column before first). This comes from pymupdf4llm. Workarounds: pass `margins=0` or `page_chunks=True` in `convert(path, margins=0)`; for best results use pymupdf with Layout support (import pymupdf.layout before pymupdf4llm when available).
 - Complex layouts may not be perfectly preserved
 - Encrypted PDFs require password handling
 - Rate limiting may occur with high worker counts on some APIs
@@ -487,7 +496,7 @@ md.register_converter(MyCustomConverter())
 ## 📋 Dependencies by Feature Group
 
 ### Document Processing
-- `pdfminer.six` - PDF text extraction
+- `pymupdf4llm` - PDF to Markdown (layout, multi-column, images)
 - `mammoth` - DOCX processing
 - `python-pptx` - PowerPoint processing
 - `pandas`, `openpyxl`, `xlrd` - Excel processing

@@ -61,3 +61,6 @@ if [ -n "$TEST_PDF" ]; then
     echo "Or test with:"
     echo "  python process_pdf.py $TEST_PDF"
 fi
+
+
+
