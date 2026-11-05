@@ -16,7 +16,7 @@ LLM integration in MarkItDown enables:
 ### Google Gemini (Recommended for Images)
 - **Gemini 2.5 Flash** - Fast, cost-effective vision model with advanced prompts
 - **Context-aware descriptions** - Understands document context around images
-- **Smart filtering** - Automatically skips UI elements, focuses on content visualizations
+- **Smart filtering** - Skips only decorative images (logos, icons, dividers). Screenshots and mockups are described
 - **PDF image extraction** - Extracts and processes images directly from PDFs
 
 ### OpenAI Models
@@ -61,8 +61,8 @@ result = md.convert("image.png")  # Direct image description
 **Key Features:**
 - **Automatic image extraction** from PDFs - no links required
 - **Context-aware descriptions** - uses surrounding text for better accuracy
-- **Smart filtering** - skips UI elements, focuses on charts/diagrams
-- **Advanced prompts** - optimized for business visualizations
+- **Smart filtering** - skips only decorative images; screenshots, mockups, charts, and photos that carry information are described
+- **Advanced prompts** - same skip policy on the short prompt and on OpenAI
 
 **Get your Gemini API key:** [Google AI Studio](https://makersuite.google.com/app/apikey)
 
@@ -207,7 +207,7 @@ print(result.text_content)
 |---------|--------|--------|
 | **PDF Image Extraction** | ✅ Automatic | ❌ Link-based only |
 | **Context Awareness** | ✅ Yes | ❌ Limited |
-| **Smart Filtering** | ✅ Skips UI elements | ❌ No |
+| **Smart Filtering** | ✅ Skips decorative images only | ✅ Same policy |
 | **Cost** | Lower | Higher |
 | **Speed** | Fast | Medium |
 

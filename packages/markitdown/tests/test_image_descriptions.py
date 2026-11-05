@@ -3,6 +3,8 @@
 Synthetic markdown and a fake OpenAI-style client. No network and no Gemini.
 """
 
+import asyncio
+import logging
 import re
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -12,7 +14,10 @@ from markitdown.converters._image_description_worker import (
     stream_info_for_item,
     use_advanced_prompt_for,
 )
+from markitdown.converters._gemini_caption import CaptionOutcome
+from markitdown.converters._image_description_worker import process_images_async
 from markitdown.converters._image_descriptions import (
+    batch_from_worker_output,
     build_subprocess_payload,
     describe_images_in_markdown,
     extract_image_context,
@@ -206,3 +211,85 @@ def test_pdf_keeps_the_description_block_format() -> None:
         # Heading, then the caption, then the original link. A swapped
         # order or a dropped link fails this.
         assert f"{_HEADING}\n\n{caption}\n\n{link}" in described
+
+
+def test_skip_answer_is_logged_and_not_counted_as_failed(tmp_path: Path, caplog) -> None:
+    image = tmp_path / "photo.jpg"
+    image.write_bytes(b"\xff\xd8\xff\xd9")
+    client = _openai_client("SKIP: decorative logo")
+
+    with caplog.at_level(logging.INFO):
+        described = describe_images_in_markdown(
+            "See ![pic](photo.jpg) here",
+            [image],
+            llm_client=client,
+            llm_model="test-model",
+        )
+
+    assert "decorative logo" not in described
+    assert _HEADING not in described
+    skip_lines = [
+        record.message
+        for record in caplog.records
+        if record.levelname == "INFO" and record.message.startswith("Skipped image ")
+    ]
+    assert len(skip_lines) == 1
+    assert "photo.jpg" in skip_lines[0]
+    assert "decorative logo" in skip_lines[0]
+    assert "1 described, 0 skipped, 0 failed" not in caplog.text
+    assert "0 described, 1 skipped, 0 failed" in caplog.text
+
+
+def test_empty_answer_is_failed_not_skipped(tmp_path: Path, caplog) -> None:
+    image = tmp_path / "photo.jpg"
+    image.write_bytes(b"\xff\xd8\xff\xd9")
+    client = _openai_client("  ")
+
+    with caplog.at_level(logging.INFO):
+        describe_images_in_markdown(
+            "See ![pic](photo.jpg) here",
+            [image],
+            llm_client=client,
+            llm_model="test-model",
+        )
+
+    assert not any(record.message.startswith("Skipped image ") for record in caplog.records)
+    assert "0 described, 0 skipped, 1 failed" in caplog.text
+
+
+def test_worker_payload_keeps_skip_and_failure_counts() -> None:
+    batch = batch_from_worker_output(
+        {"descriptions": {"a.png": "A chart."}, "skipped": 2, "failed": 1},
+        4,
+    )
+    assert batch.descriptions == {"a.png": "A chart."}
+    assert batch.skipped == 2
+    assert batch.failed == 1
+
+
+def test_worker_counts_a_skip_without_calling_gemini(tmp_path: Path, monkeypatch) -> None:
+    image = tmp_path / "photo.jpg"
+    image.write_bytes(b"\xff\xd8\xff\xd9")
+    monkeypatch.setattr(
+        "markitdown.converters._image_description_worker.create_gemini_client",
+        lambda api_key: object(),
+    )
+
+    async def skipped(*args, **kwargs):
+        return CaptionOutcome("skipped", reason="decorative logo")
+
+    monkeypatch.setattr(
+        "markitdown.converters._image_description_worker.gemini_caption_async",
+        skipped,
+    )
+    result = asyncio.run(
+        process_images_async(
+            [{"path": str(image), "mimetype": "image/jpeg", "extension": ".jpg"}],
+            "not-a-real-key",
+            "gemini-2.5-flash",
+            1,
+        )
+    )
+    assert result["descriptions"] == {}
+    assert result["skipped"] == 1
+    assert result["failed"] == 0

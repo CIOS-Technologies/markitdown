@@ -20,13 +20,13 @@ logger = logging.getLogger("image_worker")
 # Import markitdown modules
 # We need to ensure we can import from the package
 try:
-    from markitdown.converters._gemini_caption import gemini_caption_async
+    from markitdown.converters._gemini_caption import CaptionOutcome, gemini_caption_async
     from markitdown._stream_info import StreamInfo
     from markitdown.converters._llm_providers import create_gemini_client
 except ImportError:
     # If running as script, add parent directory to path
     sys.path.append(str(Path(__file__).parent.parent.parent))
-    from markitdown.converters._gemini_caption import gemini_caption_async
+    from markitdown.converters._gemini_caption import CaptionOutcome, gemini_caption_async
     from markitdown._stream_info import StreamInfo
     from markitdown.converters._llm_providers import create_gemini_client
 
@@ -71,37 +71,47 @@ async def process_images_async(
     max_workers: int,
     prompt: Optional[str] = None,
     use_advanced_prompt: bool = True,
-) -> Dict[str, str]:
+) -> Dict[str, Any]:
     """
     Process images asynchronously in a clean environment.
+
+    The result separates descriptions, skips, and failures so the parent
+    process can print one summary line.
     """
     # Create client
     client = create_gemini_client(api_key)
     if not client:
         logger.error("Failed to create Gemini client")
-        return {}
+        return {
+            "descriptions": {},
+            "skipped": 0,
+            "failed": len(image_data),
+        }
     
     semaphore = asyncio.Semaphore(max_workers)
-    results = {}
-    
+    descriptions = {}
+    skipped = 0
+    failed = 0
+
     async def process_single(item):
         async with semaphore:
             img_path = item['path']
+            name = os.path.basename(img_path)
             try:
                 # Read image
                 with open(img_path, 'rb') as f:
                     img_bytes = f.read()
-                
+
                 stream = io.BytesIO(img_bytes)
                 # Payload fields, not a fixed PNG type or a forced advanced prompt.
                 stream_info = stream_info_for_item(item)
-                
+
                 context_before = item.get('context_before')
                 context_after = item.get('context_after')
-                
-                logger.info(f"Processing: {os.path.basename(img_path)}")
-                
-                description = await gemini_caption_async(
+
+                logger.info(f"Processing: {name}")
+
+                outcome = await gemini_caption_async(
                     stream,
                     stream_info,
                     client=client,
@@ -113,21 +123,24 @@ async def process_images_async(
                         item, {"use_advanced_prompt": use_advanced_prompt}
                     ),
                 )
-                
-                if description:
-                    return os.path.basename(img_path), description
+                return name, outcome
             except Exception as e:
                 logger.error(f"Error processing {img_path}: {e}")
-            return None
+                return name, CaptionOutcome("failed", reason=str(e))
 
     tasks = [process_single(item) for item in image_data]
     processed = await asyncio.gather(*tasks)
-    
-    for p in processed:
-        if p:
-            results[p[0]] = p[1]
-            
-    return results
+
+    for name, outcome in processed:
+        if outcome.status == "described" and outcome.description:
+            descriptions[name] = outcome.description
+        elif outcome.status == "skipped":
+            # The skip line was already logged inside gemini_caption_async.
+            skipped += 1
+        else:
+            failed += 1
+
+    return {"descriptions": descriptions, "skipped": skipped, "failed": failed}
 
 def main():
     """Main entry point for the worker process."""

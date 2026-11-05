@@ -2,7 +2,7 @@
 
 These tests belong to the fork. They used to live in the upstream misc module.
 Keeping them here means the next upstream sync can take that file as-is.
-The test bodies are unchanged.
+The original test bodies are unchanged. A later test covers SKIP: answers.
 """
 
 import os
@@ -228,6 +228,46 @@ def test_markitdown_gemini_caption_with_mock() -> None:
     assert description is not None
     assert "Test image description" in description
     mock_model.generate_content.assert_called_once()
+
+
+def test_gemini_skip_answer_is_logged_with_its_reason(caplog) -> None:
+    """A SKIP: body is not a description and not a silent failure."""
+    import io
+    from unittest.mock import Mock
+    from markitdown.converters._gemini_caption import gemini_caption
+    from markitdown._stream_info import StreamInfo
+    from PIL import Image as PILImage
+
+    mock_client = Mock()
+    mock_model = Mock()
+    mock_response = Mock()
+    mock_response.text = "SKIP: decorative logo"
+    mock_model.generate_content.return_value = mock_response
+    mock_client.genai_module = Mock()
+    mock_client.genai_module.GenerativeModel.return_value = mock_model
+
+    img = PILImage.new("RGB", (8, 8), color="red")
+    img_bytes = io.BytesIO()
+    img.save(img_bytes, format="PNG")
+    img_bytes.seek(0)
+
+    with caplog.at_level("INFO"):
+        description = gemini_caption(
+            img_bytes,
+            StreamInfo(extension=".png", mimetype="image/png", filename="mark.png"),
+            client=mock_client,
+            model="gemini-2.5-flash",
+        )
+
+    assert description is None
+    skip_lines = [
+        record.message
+        for record in caplog.records
+        if record.levelname == "INFO" and record.message.startswith("Skipped image ")
+    ]
+    assert len(skip_lines) == 1
+    assert "mark.png" in skip_lines[0]
+    assert "decorative logo" in skip_lines[0]
 
 
 def test_markitdown_gemini_context_extraction() -> None:

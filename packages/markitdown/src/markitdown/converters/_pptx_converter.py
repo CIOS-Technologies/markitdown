@@ -4,11 +4,14 @@ import os
 import io
 import re
 import html
+import logging
 
 from typing import BinaryIO, Any, Optional
 
 from ._html_converter import HtmlConverter
-from ._llm_providers import caption_image
+from ._llm_providers import caption_image_outcome
+
+logger = logging.getLogger(__name__)
 from ..converter_utils._image import _parse_image_html
 from .._base_converter import DocumentConverter, DocumentConverterResult
 from .._stream_info import StreamInfo
@@ -147,7 +150,9 @@ def llm_caption(
     OpenAI errors still raise. This wrapper only adds slide context.
     """
     context_before, context_after = _slide_text_around_picture(slide, shape)
-    return caption_image(
+    # last_outcome lets the converter count skips separately from failures.
+    # Captions run one at a time on this thread, so the attribute is not shared.
+    outcome = caption_image_outcome(
         file_stream,
         stream_info,
         client=client,
@@ -157,6 +162,22 @@ def llm_caption(
         context_after=context_after,
         use_advanced_prompt=use_advanced_prompt,
     )
+    llm_caption.last_outcome = outcome
+    if outcome.status == "described":
+        return outcome.description
+    return None
+
+
+def _count_picture_caption(stats, outcome, text) -> None:
+    """Record one picture. A patched llm_caption leaves outcome as None."""
+    stats["attempted"] += 1
+    if outcome is None:
+        status = "described" if text and str(text).strip() else "failed"
+    else:
+        status = outcome.status
+    if status not in ("described", "skipped", "failed"):
+        status = "failed"
+    stats[status] += 1
 
 
 class PptxConverter(DocumentConverter):
@@ -210,6 +231,9 @@ class PptxConverter(DocumentConverter):
         presentation = pptx.Presentation(file_stream)
         md_content = ""
         slide_num = 0
+        # Counts for the one summary line. Pictures are still captioned in
+        # walk order; the shared pipeline's replacer would change alt text.
+        image_stats = {"described": 0, "skipped": 0, "failed": 0, "attempted": 0}
         for slide in presentation.slides:
             slide_num += 1
 
@@ -223,7 +247,7 @@ class PptxConverter(DocumentConverter):
                 if self._is_picture(shape):
                     # Pass this slide down. Grouped pictures are not in slide.shapes.
                     md_content += self._convert_picture_to_markdown(
-                        shape, slide=slide, **kwargs
+                        shape, slide=slide, image_stats=image_stats, **kwargs
                     )
 
                 # Tables
@@ -277,6 +301,14 @@ class PptxConverter(DocumentConverter):
                     md_content += "\n\n### Notes:\n" + notes_text
                     md_content = md_content.strip()
 
+        if image_stats["attempted"]:
+            logger.info(
+                "Completed image processing: "
+                f"{image_stats['described']} described, "
+                f"{image_stats['skipped']} skipped, "
+                f"{image_stats['failed']} failed"
+            )
+
         return DocumentConverterResult(markdown=md_content.strip())
 
     def _image_to_html(
@@ -299,7 +331,7 @@ class PptxConverter(DocumentConverter):
         """
         return None
 
-    def _convert_picture_to_markdown(self, shape, *, slide=None, **kwargs):
+    def _convert_picture_to_markdown(self, shape, *, slide=None, image_stats=None, **kwargs):
         llm_description = ""
         alt_text = ""
         image_blob, image_content_type, image_filename = self._get_image_info(shape)
@@ -313,6 +345,8 @@ class PptxConverter(DocumentConverter):
         llm_model = kwargs.get("llm_model")
         if llm_client is not None and llm_model is not None and image_blob is not None:
             with io.BytesIO(image_blob) as image_stream:
+                # Clear any outcome left by an earlier picture or a test double.
+                llm_caption.last_outcome = None
                 try:
                     llm_description = llm_caption(
                         image_stream,
@@ -328,7 +362,17 @@ class PptxConverter(DocumentConverter):
                     )
                 except Exception:
                     # Preserve native caption failure fallback.
-                    pass
+                    llm_description = None
+                    if image_stats is not None:
+                        image_stats["attempted"] += 1
+                        image_stats["failed"] += 1
+                else:
+                    if image_stats is not None:
+                        _count_picture_caption(
+                            image_stats,
+                            getattr(llm_caption, "last_outcome", None),
+                            llm_description,
+                        )
 
         if (
             (not llm_description or not llm_description.strip())

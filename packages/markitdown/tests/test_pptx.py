@@ -747,6 +747,35 @@ def test_caption_failure_precedes_hook_with_fresh_image_stream(
     assert "recognized" in result.markdown
 
 
+def test_pptx_skip_is_logged_and_not_used_as_the_caption(caplog) -> None:
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    slide.shapes.add_picture(io.BytesIO(_PNG), Inches(1), Inches(1), Inches(1), Inches(1))
+    stream = io.BytesIO()
+    presentation.save(stream)
+    stream.seek(0)
+    client = MagicMock()
+    client.chat.completions.create.return_value.choices[0].message.content = (
+        "SKIP: decorative logo"
+    )
+
+    with caplog.at_level("INFO"):
+        result = PptxConverter().convert(
+            stream, _INFO, llm_client=client, llm_model="test-model"
+        )
+
+    assert "decorative logo" not in result.markdown
+    assert "SKIP:" not in result.markdown
+    skip_lines = [
+        record.message
+        for record in caplog.records
+        if record.levelname == "INFO" and record.message.startswith("Skipped image ")
+    ]
+    assert len(skip_lines) == 1
+    assert "decorative logo" in skip_lines[0]
+    assert "0 described, 1 skipped, 0 failed" in caplog.text
+
+
 def test_successful_caption_keeps_native_markdown_without_hook_or_html(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -168,10 +168,13 @@ Review: each slice reviewed by Cowork against the plan; 8 guard tests mutation-c
 Live check (Gemini 2.5 Flash, `MarkItDown(gemini_api_key=…, llm_model="gemini-2.5-flash")`, `convert(…, max_image_workers=4)`), 2026-11-05:
 - PDF `test_image.pdf`: 2 descriptions. PPTX `test.pptx`: description in alt text. DOCX with a real diagram: described. XLSX banners: 1 of 2 described.
 - Subprocess worker path (production under gevent): JPEG described, real mimetype passed.
-- Synthetic text-banner images are sometimes answered `SKIP:` by Gemini — this is the advanced prompt's "skip decorative/UI images" rule in `_gemini_caption.py`, not a pipeline fault (same DOCX with a real photo is described).
+- Synthetic text-banner images were sometimes answered `SKIP:` by Gemini. That was the old prompt, which treated screenshots and UI as non-content. The follow-up below widens the rule: only decorative images are skipped.
 - Not verified here: the real gevent switch inside ai_personality (gevent is not in markitdown's venv) — covered by the ai_personality pin-bump step (upload on the test stack).
 
 LOW end-list (not blocking):
 1. `ImageDescriptionSession.add` base64-encodes every image even when `keep_data_uris` is off (memory only).
 2. Ungrouped PPTX pictures still take context from `slide.shapes` collection order, grouped ones from the visual walk order — unify on walk order.
 3. Pre-existing: the subprocess worker receives the API key via a temp JSON file under `/tmp`.
+4. PPTX captions stay one-at-a-time. The shared parallel pipeline does not fit without a restructure: its replacer writes a description block and would change the alt-text caption PPTX emits today; context comes from the shape tree (including groups) rather than finished markdown; sanitized `shape.name` filenames can collide. Logging and the `N described, M skipped, K failed` summary were added on the existing path. A later change would be a two-pass walk (unique temp files, precomputed context, then `process_images_parallel`, then put the text back into the alt).
+
+Follow-up (working tree, image policy): describe every image that carries information. Skip only logos, icons, bullets, dividers, backgrounds, borders, and purely decorative stock photos. Screenshots and UI mockups are described. The same policy is on the Gemini advanced prompt, the short prompt, and the OpenAI default prompt. A `SKIP:` answer is logged at INFO with the file name and the reason. Each document logs one summary line, `N described, M skipped, K failed`, where failed means an exception or an empty answer.

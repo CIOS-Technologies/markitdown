@@ -202,6 +202,60 @@ def create_gemini_client(api_key: Optional[str] = None) -> Optional[Any]:
         return None
 
 
+def caption_image_outcome(
+    file_stream: BinaryIO,
+    stream_info: StreamInfo,
+    *,
+    client: Any,
+    model: str,
+    prompt: Optional[str] = None,
+    context_before: Optional[str] = None,
+    context_after: Optional[str] = None,
+    use_advanced_prompt: bool = True,
+):
+    """Caption one image and say whether it was described, skipped, or failed.
+
+    OpenAI API errors still raise. Gemini errors come back as failed.
+    Both providers use the same default prompt and the same SKIP: rule.
+    """
+    from ._gemini_caption import CaptionOutcome
+
+    provider = detect_provider(client)
+
+    if provider == "gemini":
+        from ._gemini_caption import gemini_caption_outcome
+        return gemini_caption_outcome(
+            file_stream=file_stream,
+            stream_info=stream_info,
+            client=client,
+            model=model,
+            prompt=prompt,
+            context_before=context_before,
+            context_after=context_after,
+            use_advanced_prompt=use_advanced_prompt,
+        )
+
+    # OpenAI, and unknown clients that speak the OpenAI chat API.
+    try:
+        from ._llm_caption import openai_caption_outcome
+        return openai_caption_outcome(
+            file_stream=file_stream,
+            stream_info=stream_info,
+            client=client,
+            model=model,
+            prompt=prompt,
+            context_before=context_before,
+            context_after=context_after,
+            use_advanced_prompt=use_advanced_prompt,
+        )
+    except Exception:
+        if provider == "openai":
+            # A real OpenAI client must surface API errors. Unknown clients
+            # that merely look similar still fail soft, as before.
+            raise
+        return CaptionOutcome("failed", reason="caption failed")
+
+
 def caption_image(
     file_stream: BinaryIO,
     stream_info: StreamInfo,
@@ -215,7 +269,7 @@ def caption_image(
 ) -> Union[None, str]:
     """
     Unified interface for image captioning across different LLM providers.
-    
+
     Args:
         file_stream: Binary image stream
         stream_info: Stream metadata
@@ -224,48 +278,23 @@ def caption_image(
         prompt: Custom prompt
         context_before: Text context before image
         context_after: Text context after image
-        use_advanced_prompt: Whether to use advanced prompt (Gemini only)
-        
+        use_advanced_prompt: Whether to use the longer default prompt
+
     Returns:
-        Image description or None if failed
+        Image description, or None when the image was skipped or the call failed.
+        OpenAI API errors still raise.
     """
-    provider = detect_provider(client)
-    
-    if provider == "openai":
-        from ._llm_caption import llm_caption
-        # OpenAI doesn't support context yet, so ignore context_before/context_after
-        return llm_caption(
-            file_stream=file_stream,
-            stream_info=stream_info,
-            client=client,
-            model=model,
-            prompt=prompt,
-        )
-    
-    elif provider == "gemini":
-        from ._gemini_caption import gemini_caption
-        return gemini_caption(
-            file_stream=file_stream,
-            stream_info=stream_info,
-            client=client,
-            model=model,
-            prompt=prompt,
-            context_before=context_before,
-            context_after=context_after,
-            use_advanced_prompt=use_advanced_prompt,
-        )
-    
-    else:
-        # Unknown provider, try OpenAI format as fallback
-        try:
-            from ._llm_caption import llm_caption
-            return llm_caption(
-                file_stream=file_stream,
-                stream_info=stream_info,
-                client=client,
-                model=model,
-                prompt=prompt,
-            )
-        except Exception:
-            return None
+    outcome = caption_image_outcome(
+        file_stream,
+        stream_info,
+        client=client,
+        model=model,
+        prompt=prompt,
+        context_before=context_before,
+        context_after=context_after,
+        use_advanced_prompt=use_advanced_prompt,
+    )
+    if outcome.status == "described":
+        return outcome.description
+    return None
 

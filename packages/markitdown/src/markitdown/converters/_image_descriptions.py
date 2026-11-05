@@ -27,11 +27,13 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
 from .._stream_info import StreamInfo
-from ._llm_providers import caption_image, detect_provider
+from ._gemini_caption import CaptionOutcome
+from ._llm_providers import caption_image_outcome, detect_provider
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,40 @@ logger = logging.getLogger(__name__)
 # original image link is appended to this block. Inside a table the link
 # stays in the cell and only this block is added after the table.
 _DESCRIPTION_HEADING = "**[AI-Generated Image Description]**"
+
+
+@dataclass
+class DescriptionBatch:
+    """Descriptions plus how many images were skipped or failed.
+
+    skipped means the model answered SKIP. failed means an exception or an
+    empty answer. The summary line uses these three counts.
+    """
+
+    descriptions: dict[str, str] = field(default_factory=dict)
+    skipped: int = 0
+    failed: int = 0
+
+    def add(self, name: str, outcome: Optional[CaptionOutcome]) -> None:
+        if outcome is not None and outcome.status == "described" and outcome.description:
+            self.descriptions[name] = outcome.description
+        elif outcome is not None and outcome.status == "skipped":
+            self.skipped += 1
+        else:
+            self.failed += 1
+
+
+def batch_from_worker_output(payload: Any, image_count: int) -> DescriptionBatch:
+    """Read the worker JSON. A flat name-to-text map is the older shape."""
+    if isinstance(payload, dict) and isinstance(payload.get("descriptions"), dict):
+        return DescriptionBatch(
+            descriptions=payload["descriptions"],
+            skipped=int(payload.get("skipped") or 0),
+            failed=int(payload.get("failed") or 0),
+        )
+    if isinstance(payload, dict):
+        return DescriptionBatch(descriptions=payload)
+    return DescriptionBatch(descriptions={}, failed=image_count)
 
 # A pipe row, and the dash row that makes the block a real markdown table.
 _TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
@@ -62,20 +98,21 @@ def describe_images_in_markdown(
     if not image_files:
         return markdown
 
-    descriptions = process_images_parallel(
+    batch = process_images_parallel(
         image_files,
         markdown,
         llm_client,
         llm_model,
         **kwargs,
     )
+    # One line per document. Skips are also logged one by one, with the reason.
     logger.info(
         "Completed image processing: "
-        f"{len(descriptions)}/{len(image_files)} images described successfully"
+        f"{len(batch.descriptions)} described, {batch.skipped} skipped, {batch.failed} failed"
     )
-    if not descriptions:
+    if not batch.descriptions:
         return markdown
-    return replace_images_with_descriptions(markdown, descriptions)
+    return replace_images_with_descriptions(markdown, batch.descriptions)
 
 
 def image_file_stream_info(img_path: Path) -> StreamInfo:
@@ -264,7 +301,7 @@ def process_images_parallel(
     llm_client: Any,
     llm_model: str,
     **kwargs: Any,
-) -> dict[str, str]:
+) -> DescriptionBatch:
     """
     Process images in parallel using worker pool with adaptive rate limiting.
 
@@ -375,7 +412,7 @@ def _process_images_subprocess(
     llm_model: str,
     max_workers: int,
     **kwargs: Any,
-) -> dict[str, str]:
+) -> DescriptionBatch:
     """
     Process images using a separate subprocess to bypass gevent limitations.
     """
@@ -486,14 +523,16 @@ def _process_images_subprocess(
         # Read results
         if os.path.exists(output_path):
             with open(output_path, "r") as f:
-                descriptions = json.load(f)
+                payload = json.load(f)
+            batch = batch_from_worker_output(payload, total_images)
             logger.info(
-                f"Subprocess completed successfully. Received {len(descriptions)} descriptions."
+                "Subprocess completed successfully. "
+                f"Received {len(batch.descriptions)} descriptions."
             )
-            return descriptions
+            return batch
         else:
             logger.error("Subprocess did not produce output file")
-            return {}
+            return DescriptionBatch(failed=total_images)
 
     except Exception as e:
         logger.error(f"Error running subprocess worker: {e}", exc_info=True)
@@ -515,7 +554,7 @@ async def _process_images_async(
     llm_model: str,
     max_workers: int,
     **kwargs: Any,
-) -> dict[str, str]:
+) -> DescriptionBatch:
     """
     Process images asynchronously using asyncio for true parallelism.
 
@@ -552,9 +591,9 @@ async def _process_images_async(
 
     # Create semaphore to limit concurrent requests
     semaphore = asyncio.Semaphore(max_workers)
-    image_descriptions: dict[str, str] = {}
+    batch = DescriptionBatch()
 
-    async def process_single_image_async(task: dict) -> tuple[str, Optional[str]]:
+    async def process_single_image_async(task: dict) -> tuple[str, CaptionOutcome]:
         """Process a single image asynchronously."""
         async with semaphore:
             idx = task["idx"]
@@ -581,7 +620,7 @@ async def _process_images_async(
 
                 # Call async caption function
                 logger.debug(f"[Async] Calling gemini_caption_async for: {img_path.name}")
-                description = await gemini_caption_async(
+                outcome = await gemini_caption_async(
                     img_stream,
                     img_stream_info,
                     client=llm_client,
@@ -596,23 +635,23 @@ async def _process_images_async(
                 )
 
                 duration = time.time() - start_time
-                if description:
+                if outcome.status == "described":
                     logger.info(
-                        f"[Async] COMPLETED image {idx}/{total_images} in {duration:.2f}s: {img_path.name} ({len(description)} chars)"
+                        f"[Async] COMPLETED image {idx}/{total_images} in {duration:.2f}s: {img_path.name} ({len(outcome.description or '')} chars)"
                     )
                 else:
                     logger.debug(
-                        f"[Async] SKIPPED image {idx}/{total_images} in {duration:.2f}s: {img_path.name}"
+                        f"[Async] {outcome.status} image {idx}/{total_images} in {duration:.2f}s: {img_path.name}"
                     )
 
-                return img_path.name, description
+                return img_path.name, outcome
 
             except Exception as e:
                 duration = time.time() - start_time
                 logger.warning(
                     f"[Async] ERROR processing image {idx}/{total_images} in {duration:.2f}s: {img_path.name} - {str(e)}"
                 )
-                return img_path.name, None
+                return img_path.name, CaptionOutcome("failed", reason=str(e))
 
     # Process all images concurrently
     logger.info(
@@ -632,21 +671,22 @@ async def _process_images_async(
         completed_count += 1
         if isinstance(result, Exception):
             logger.warning(f"Task failed with exception: {result}")
+            batch.failed += 1
             continue
 
-        image_name, description = result
-        if description:
-            image_descriptions[image_name] = description
+        image_name, outcome = result
+        batch.add(image_name, outcome)
+        if outcome.status == "described":
             logger.info(
                 f"Successfully processed image {completed_count}/{total_images}: {image_name}"
             )
 
     total_duration = time.time() - start_time
     logger.info(
-        f"Completed async processing: {len(image_descriptions)}/{total_images} images described in {total_duration:.2f}s"
+        f"Completed async processing: {len(batch.descriptions)}/{total_images} images described in {total_duration:.2f}s"
     )
 
-    return image_descriptions
+    return batch
 
 
 def _process_images_threaded(
@@ -656,7 +696,7 @@ def _process_images_threaded(
     llm_model: str,
     max_workers: int,
     **kwargs: Any,
-) -> dict[str, str]:
+) -> DescriptionBatch:
     """
     Process images using ThreadPoolExecutor (fallback for non-Gemini providers).
 
@@ -688,7 +728,7 @@ def _process_images_threaded(
             }
         )
 
-    image_descriptions: dict[str, str] = {}
+    batch = DescriptionBatch()
     current_workers = max_workers
     consecutive_errors = 0
     max_consecutive_errors = 3
@@ -746,20 +786,22 @@ def _process_images_threaded(
 
             completed_count += 1
             try:
-                description = future.result()
-                if description:
-                    image_descriptions[image_name] = description
+                outcome = future.result()
+                batch.add(image_name, outcome)
+                if outcome.status == "described" and outcome.description:
                     logger.info(
-                        f"Successfully generated description for image {idx}/{total_images} ({completed_count}/{total_images} completed): {image_name} ({len(description)} chars)"
+                        f"Successfully generated description for image {idx}/{total_images} ({completed_count}/{total_images} completed): {image_name} ({len(outcome.description)} chars)"
                     )
                     consecutive_errors = 0  # Reset error counter on success
                 else:
+                    # The skip itself was logged with its reason. A failure was not.
                     logger.debug(
-                        f"Image {idx}/{total_images} ({completed_count}/{total_images} completed) skipped or failed: {image_name}"
+                        f"Image {idx}/{total_images} ({completed_count}/{total_images} completed) {outcome.status}: {image_name}"
                     )
                     consecutive_errors = 0  # Skipped images don't count as errors
 
             except Exception as e:
+                batch.failed += 1
                 # Track consecutive errors for monitoring
                 consecutive_errors += 1
                 error_msg = str(e).lower()
@@ -780,7 +822,7 @@ def _process_images_threaded(
                         f"if this persists."
                     )
 
-    return image_descriptions
+    return batch
 
 
 def _process_single_image(
@@ -792,7 +834,7 @@ def _process_single_image(
     llm_client: Any,
     llm_model: str,
     kwargs: dict,
-) -> Optional[str]:
+) -> CaptionOutcome:
     """
     Process a single image (worker function for parallel processing).
 
@@ -830,7 +872,7 @@ def _process_single_image(
             f"[Thread {thread_id}] Calling LLM API for image {idx}/{total_images}: {img_path.name}"
         )
         api_start = time.time()
-        description = caption_image(
+        outcome = caption_image_outcome(
             img_stream,
             img_stream_info,
             client=llm_client,
@@ -846,7 +888,7 @@ def _process_single_image(
             f"[Thread {thread_id}] COMPLETED image {idx}/{total_images} in {total_duration:.2f}s (API: {api_duration:.2f}s): {img_path.name}"
         )
 
-        return description
+        return outcome
 
     except Exception:
         # Re-raise exception to be handled by caller
