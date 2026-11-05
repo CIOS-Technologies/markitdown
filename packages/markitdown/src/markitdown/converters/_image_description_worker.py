@@ -6,6 +6,7 @@ import sys
 import logging
 import base64
 import io
+import mimetypes
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
@@ -29,12 +30,47 @@ except ImportError:
     from markitdown._stream_info import StreamInfo
     from markitdown.converters._llm_providers import create_gemini_client
 
+def stream_info_for_item(item: Dict[str, Any]) -> "StreamInfo":
+    """StreamInfo from the worker payload.
+
+    The parent process sends mimetype and extension. We do not label the
+    file image/png when those fields say otherwise. If a field is missing,
+    guess from the file name.
+    """
+    img_path = item["path"]
+    extension = item.get("extension") or os.path.splitext(img_path)[1] or None
+    mimetype = item.get("mimetype")
+    if not mimetype:
+        guessed, _ = mimetypes.guess_type(os.path.basename(img_path))
+        mimetype = guessed or "application/octet-stream"
+    return StreamInfo(
+        filename=os.path.basename(img_path),
+        extension=extension,
+        mimetype=mimetype,
+    )
+
+
+def use_advanced_prompt_for(item: Dict[str, Any], config: Dict[str, Any]) -> bool:
+    """Read the advanced-prompt flag from the payload.
+
+    A per-image value wins. Otherwise the config value is used. The old
+    worker always passed True; that default remains only when the payload
+    does not say.
+    """
+    if "use_advanced_prompt" in item:
+        return bool(item["use_advanced_prompt"])
+    if "use_advanced_prompt" in config:
+        return bool(config["use_advanced_prompt"])
+    return True
+
+
 async def process_images_async(
     image_data: List[Dict[str, Any]],
     api_key: str,
     model: str,
     max_workers: int,
-    prompt: Optional[str] = None
+    prompt: Optional[str] = None,
+    use_advanced_prompt: bool = True,
 ) -> Dict[str, str]:
     """
     Process images asynchronously in a clean environment.
@@ -57,11 +93,8 @@ async def process_images_async(
                     img_bytes = f.read()
                 
                 stream = io.BytesIO(img_bytes)
-                stream_info = StreamInfo(
-                    filename=os.path.basename(img_path),
-                    extension=os.path.splitext(img_path)[1],
-                    mimetype='image/png'
-                )
+                # Payload fields, not a fixed PNG type or a forced advanced prompt.
+                stream_info = stream_info_for_item(item)
                 
                 context_before = item.get('context_before')
                 context_after = item.get('context_after')
@@ -76,7 +109,9 @@ async def process_images_async(
                     prompt=prompt,
                     context_before=context_before,
                     context_after=context_after,
-                    use_advanced_prompt=True
+                    use_advanced_prompt=use_advanced_prompt_for(
+                        item, {"use_advanced_prompt": use_advanced_prompt}
+                    ),
                 )
                 
                 if description:
@@ -113,12 +148,15 @@ def main():
         model = config.get('model', 'gemini-2.5-flash')
         max_workers = config.get('max_workers', 20)
         prompt = config.get('prompt')
+        # Absent flag keeps the previous default. A present flag is obeyed,
+        # including False.
+        advanced = config.get('use_advanced_prompt', True)
         
         logger.info(f"Worker starting with {len(images)} images, {max_workers} workers")
         
         # Run async processing
         results = asyncio.run(process_images_async(
-            images, api_key, model, max_workers, prompt
+            images, api_key, model, max_workers, prompt, advanced
         ))
         
         # Write results to stdout as JSON
