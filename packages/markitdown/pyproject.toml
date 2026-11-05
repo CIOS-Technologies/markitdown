@@ -7,7 +7,7 @@ name = "markitdown"
 dynamic = ["version"]
 description = 'Utility tool for converting various files to Markdown'
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.15"
 license = "MIT"
 keywords = []
 authors = [
@@ -20,23 +20,24 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Programming Language :: Python :: Implementation :: CPython",
   "Programming Language :: Python :: Implementation :: PyPy",
 ]
 dependencies = [
   "beautifulsoup4",
   "requests",
+  "certifi>=2026.10.19",
   "markdownify",
-  "magika~=0.6.1",
+  "magika>=0.6.1,<2",
   "charset-normalizer",
   "defusedxml",
-  "onnxruntime<=1.20.1; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
 all = [
   "python-pptx",
-  "mammoth~=1.11.0",
+  "mammoth>=1.12.2,<2",
   "pandas",
   "openpyxl",
   "xlrd",
@@ -45,22 +46,27 @@ all = [
   "olefile",
   "pydub",
   "SpeechRecognition",
-  "youtube-transcript-api~=1.0.0",
+  "youtube-transcript-api~=1.2.3",
   "azure-ai-documentintelligence",
+  "azure-ai-contentunderstanding>=1.2.0b1",
   "azure-identity",
   "google-generativeai",
-  "pillow"
+  "pillow",
 ]
 pptx = ["python-pptx"]
-docx = ["mammoth~=1.11.0", "lxml"]
+docx = ["mammoth>=1.12.2,<2", "lxml"]
 xlsx = ["pandas", "openpyxl"]
 xls = ["pandas", "xlrd"]
+# Fork: PDF converter uses pymupdf4llm (AGPL / Artifex commercial) — to be replaced under ENG-2.
 pdf = ["pymupdf4llm"]
+# Fork: pymupdf-layout is Polyform Noncommercial — do not install in commercial deployments (ENG-2).
 pdf-layout = ["pymupdf-layout"]
 outlook = ["olefile"]
 audio-transcription = ["pydub", "SpeechRecognition"]
-youtube-transcription = ["youtube-transcript-api"]
+youtube-transcription = ["youtube-transcript-api~=1.2.3"]
 az-doc-intel = ["azure-ai-documentintelligence", "azure-identity"]
+# >=1.2.0b1 required for to_llm_input() helper used by ContentUnderstandingConverter
+az-content-understanding = ["azure-ai-contentunderstanding>=1.2.0b1", "azure-identity"]
 
 [project.urls]
 Documentation = "https://github.com/microsoft/markitdown#readme"
@@ -80,9 +86,9 @@ features = ["all"]
 features = ["all"]
 extra-dependencies = [
   "openai",
+  "pyyaml",
   "google-generativeai",
   "pillow",
-  "pymupdf4llm",
 ]
 
 [tool.hatch.envs.types]

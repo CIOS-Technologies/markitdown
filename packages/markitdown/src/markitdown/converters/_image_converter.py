@@ -1,6 +1,4 @@
-from typing import BinaryIO, Any, Union, Optional
-import base64
-import mimetypes
+from typing import BinaryIO, Any, Union
 from ._exiftool import exiftool_metadata
 from ._llm_providers import caption_image
 from .._base_converter import DocumentConverter, DocumentConverterResult
@@ -66,11 +64,12 @@ class ImageConverter(DocumentConverter):
                 if f in metadata:
                     md_content += f"{f}: {metadata[f]}\n"
 
-        # Try describing the image with LLM (OpenAI or Gemini)
+        # Try describing the image with LLM (OpenAI or Gemini).
+        # _get_llm_description is the seam upstream tests patch.
         llm_client = kwargs.get("llm_client")
         llm_model = kwargs.get("llm_model")
         if llm_client is not None and llm_model is not None:
-            llm_description = caption_image(
+            llm_description = self._get_llm_description(
                 file_stream,
                 stream_info,
                 client=llm_client,
@@ -86,4 +85,33 @@ class ImageConverter(DocumentConverter):
 
         return DocumentConverterResult(
             markdown=md_content,
+        )
+
+    def _get_llm_description(
+        self,
+        file_stream: BinaryIO,
+        stream_info: StreamInfo,
+        *,
+        client,
+        model,
+        prompt=None,
+        context_before=None,
+        context_after=None,
+        use_advanced_prompt: bool = True,
+    ) -> Union[None, str]:
+        """Describe one image through the shared caption helper.
+
+        Upstream's method called the OpenAI API itself and let those errors
+        raise. caption_image keeps that for OpenAI. Gemini uses the same seam,
+        including surrounding text and the advanced prompt.
+        """
+        return caption_image(
+            file_stream,
+            stream_info,
+            client=client,
+            model=model,
+            prompt=prompt,
+            context_before=context_before,
+            context_after=context_after,
+            use_advanced_prompt=use_advanced_prompt,
         )

@@ -1,18 +1,7 @@
-import sys
-
 from typing import BinaryIO, Any
 from charset_normalizer import from_bytes
 from .._base_converter import DocumentConverter, DocumentConverterResult
 from .._stream_info import StreamInfo
-
-# Try loading optional (but in this case, required) dependencies
-# Save reporting of any exceptions for later
-_dependency_exc_info = None
-try:
-    import mammoth  # noqa: F401
-except ImportError:
-    # Preserve the error and stack trace for later
-    _dependency_exc_info = sys.exc_info()
 
 ACCEPTED_MIME_TYPE_PREFIXES = [
     "text/",
@@ -28,6 +17,19 @@ ACCEPTED_FILE_EXTENSIONS = [
     ".json",
     ".jsonl",
 ]
+
+
+def _text_from_detection(file_bytes: bytes) -> str:
+    """Decode bytes when a declared charset is missing or cannot be used.
+
+    charset_normalizer returns None when no charset claims the bytes.
+    str(None) is the word "None", which was never in the file.
+    Drop undecodable bytes with utf-8 instead.
+    """
+    detected = from_bytes(file_bytes).best()
+    if detected is not None:
+        return str(detected)
+    return file_bytes.decode("utf-8", errors="ignore")
 
 
 class PlainTextConverter(DocumentConverter):
@@ -63,19 +65,18 @@ class PlainTextConverter(DocumentConverter):
         stream_info: StreamInfo,
         **kwargs: Any,  # Options to pass to the converter
     ) -> DocumentConverterResult:
-        # Read the file content once
+        # Read once. A failed declared charset must still see the same bytes.
         file_bytes = file_stream.read()
-        
+
         if stream_info.charset:
-            # Try decoding with the detected charset first
+            # A declared charset wins when it can decode the file.
+            # If it cannot (wrong name, or ASCII bytes that are really UTF-8),
+            # fall back to detection, then to utf-8 with errors ignored.
             try:
                 text_content = file_bytes.decode(stream_info.charset)
             except (UnicodeDecodeError, LookupError):
-                # If the detected charset fails (e.g., ASCII can't decode UTF-8 characters),
-                # fall back to charset_normalizer which is more robust
-                text_content = str(from_bytes(file_bytes).best())
+                text_content = _text_from_detection(file_bytes)
         else:
-            # No charset detected, use charset_normalizer
-            text_content = str(from_bytes(file_bytes).best())
+            text_content = _text_from_detection(file_bytes)
 
         return DocumentConverterResult(markdown=text_content)

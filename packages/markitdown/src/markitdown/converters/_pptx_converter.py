@@ -5,11 +5,11 @@ import io
 import re
 import html
 
-from typing import BinaryIO, Any
-from operator import attrgetter
+from typing import BinaryIO, Any, Optional
 
 from ._html_converter import HtmlConverter
 from ._llm_providers import caption_image
+from ..converter_utils._image import _parse_image_html
 from .._base_converter import DocumentConverter, DocumentConverterResult
 from .._stream_info import StreamInfo
 from .._exceptions import MissingDependencyException, MISSING_DEPENDENCY_MESSAGE
@@ -29,6 +29,74 @@ ACCEPTED_MIME_TYPE_PREFIXES = [
 ]
 
 ACCEPTED_FILE_EXTENSIONS = [".pptx"]
+
+
+
+def _slide_text_around_picture(slide, shape):
+    """Text on this slide, split into what sits before and after the picture.
+
+    Ported from our pre-merge converter. Pictures inside a group are not in
+    slide.shapes, so the index lookup fails and every other text shape becomes
+    context before the picture. Each side is capped at 800 characters.
+    """
+    slide_text_before = ""
+    slide_text_after = ""
+    if slide is None:
+        return None, None
+    try:
+        shape_index = list(slide.shapes).index(shape)
+        for idx, other_shape in enumerate(slide.shapes):
+            if (
+                other_shape != shape
+                and hasattr(other_shape, "has_text_frame")
+                and other_shape.has_text_frame
+            ):
+                if idx < shape_index:
+                    slide_text_before += other_shape.text + " "
+                elif idx > shape_index:
+                    slide_text_after += other_shape.text + " "
+    except (ValueError, AttributeError):
+        # Grouped or otherwise unlisted pictures: keep the slide text we can see.
+        for other_shape in slide.shapes:
+            if (
+                other_shape != shape
+                and hasattr(other_shape, "has_text_frame")
+                and other_shape.has_text_frame
+            ):
+                slide_text_before += other_shape.text + " "
+    context_before = slide_text_before[:800] if slide_text_before else None
+    context_after = slide_text_after[:800] if slide_text_after else None
+    return context_before, context_after
+
+
+def llm_caption(
+    file_stream,
+    stream_info,
+    *,
+    client,
+    model,
+    prompt=None,
+    slide=None,
+    shape=None,
+    use_advanced_prompt=True,
+):
+    """Caption one slide picture, including the slide's other text.
+
+    The name stays llm_caption so upstream tests can patch this module.
+    caption_image sends Gemini calls to Gemini and OpenAI calls to OpenAI.
+    OpenAI errors still raise. This wrapper only adds slide context.
+    """
+    context_before, context_after = _slide_text_around_picture(slide, shape)
+    return caption_image(
+        file_stream,
+        stream_info,
+        client=client,
+        model=model,
+        prompt=prompt,
+        context_before=context_before,
+        context_after=context_after,
+        use_advanced_prompt=use_advanced_prompt,
+    )
 
 
 class PptxConverter(DocumentConverter):
@@ -93,86 +161,10 @@ class PptxConverter(DocumentConverter):
                 nonlocal md_content
                 # Pictures
                 if self._is_picture(shape):
-                    # https://github.com/scanny/python-pptx/pull/512#issuecomment-1713100069
-
-                    llm_description = ""
-                    alt_text = ""
-
-                    # Potentially generate a description using an LLM
-                    llm_client = kwargs.get("llm_client")
-                    llm_model = kwargs.get("llm_model")
-                    if llm_client is not None and llm_model is not None:
-                        # Prepare a file_stream and stream_info for the image data
-                        image_filename = shape.image.filename
-                        image_extension = None
-                        if image_filename:
-                            image_extension = os.path.splitext(image_filename)[1]
-                        image_stream_info = StreamInfo(
-                            mimetype=shape.image.content_type,
-                            extension=image_extension,
-                            filename=image_filename,
-                        )
-
-                        image_stream = io.BytesIO(shape.image.blob)
-
-                        # Caption the image with context from slide
-                        # Extract context from slide text for better descriptions
-                        slide_text_before = ""
-                        slide_text_after = ""
-                        try:
-                            shape_index = list(slide.shapes).index(shape)
-                            for idx, other_shape in enumerate(slide.shapes):
-                                if other_shape != shape and hasattr(other_shape, 'has_text_frame') and other_shape.has_text_frame:
-                                    if idx < shape_index:
-                                        slide_text_before += other_shape.text + " "
-                                    elif idx > shape_index:
-                                        slide_text_after += other_shape.text + " "
-                        except (ValueError, AttributeError):
-                            # If we can't get shape index, just collect all text
-                            for other_shape in slide.shapes:
-                                if other_shape != shape and hasattr(other_shape, 'has_text_frame') and other_shape.has_text_frame:
-                                    slide_text_before += other_shape.text + " "
-                        
-                        try:
-                            llm_description = caption_image(
-                                image_stream,
-                                image_stream_info,
-                                client=llm_client,
-                                model=llm_model,
-                                prompt=kwargs.get("llm_prompt"),
-                                context_before=slide_text_before[:800] if slide_text_before else None,
-                                context_after=slide_text_after[:800] if slide_text_after else None,
-                                use_advanced_prompt=kwargs.get("llm_use_advanced_prompt", True),
-                            )
-                        except Exception:
-                            # Unable to generate a description
-                            pass
-
-                    # Also grab any description embedded in the deck
-                    try:
-                        alt_text = shape._element._nvXxPr.cNvPr.attrib.get("descr", "")
-                    except Exception:
-                        # Unable to get alt text
-                        pass
-
-                    # Prepare the alt, escaping any special characters
-                    # Combine llm_description and alt_text if both exist
-                    if llm_description:
-                        alt_text = "\n".join([llm_description, alt_text]) if alt_text else llm_description
-                    alt_text = alt_text or shape.name
-                    alt_text = re.sub(r"[\r\n\[\]]", " ", alt_text)
-                    alt_text = re.sub(r"\s+", " ", alt_text).strip()
-
-                    # If keep_data_uris is True, use base64 encoding for images
-                    if kwargs.get("keep_data_uris", False):
-                        blob = shape.image.blob
-                        content_type = shape.image.content_type or "image/png"
-                        b64_string = base64.b64encode(blob).decode("utf-8")
-                        md_content += f"\n![{alt_text}](data:{content_type};base64,{b64_string})\n"
-                    else:
-                        # A placeholder name
-                        filename = re.sub(r"\W", "", shape.name) + ".jpg"
-                        md_content += "\n![" + alt_text + "](" + filename + ")\n"
+                    # Pass this slide down. Grouped pictures are not in slide.shapes.
+                    md_content += self._convert_picture_to_markdown(
+                        shape, slide=slide, **kwargs
+                    )
 
                 # Tables
                 if self._is_table(shape):
@@ -184,18 +176,20 @@ class PptxConverter(DocumentConverter):
 
                 # Text areas
                 elif shape.has_text_frame:
+                    text = shape.text or ""
                     if shape == title:
-                        md_content += "# " + shape.text.lstrip() + "\n"
+                        if text.strip():
+                            md_content += "# " + text.lstrip() + "\n"
                     else:
-                        md_content += shape.text + "\n"
+                        md_content += text + "\n"
 
                 # Group Shapes
                 if shape.shape_type == pptx.enum.shapes.MSO_SHAPE_TYPE.GROUP:
                     sorted_shapes = sorted(
                         shape.shapes,
                         key=lambda x: (
-                            float("-inf") if not x.top else x.top,
-                            float("-inf") if not x.left else x.left,
+                            float("-inf") if x.top is None else x.top,
+                            float("-inf") if x.left is None else x.left,
                         ),
                     )
                     for subshape in sorted_shapes:
@@ -204,8 +198,8 @@ class PptxConverter(DocumentConverter):
             sorted_shapes = sorted(
                 slide.shapes,
                 key=lambda x: (
-                    float("-inf") if not x.top else x.top,
-                    float("-inf") if not x.left else x.left,
+                    float("-inf") if x.top is None else x.top,
+                    float("-inf") if x.left is None else x.left,
                 ),
             )
             for shape in sorted_shapes:
@@ -214,20 +208,169 @@ class PptxConverter(DocumentConverter):
             md_content = md_content.strip()
 
             if slide.has_notes_slide:
-                md_content += "\n\n### Notes:\n"
+                # PowerPoint attaches a notes slide to a slide whose notes pane
+                # has merely been opened, so having one says nothing about there
+                # being notes to read. Only head a section that has content.
                 notes_frame = slide.notes_slide.notes_text_frame
-                if notes_frame is not None:
-                    md_content += notes_frame.text
-                md_content = md_content.strip()
+                notes_text = (notes_frame.text or "") if notes_frame is not None else ""
+                if notes_text.strip():
+                    md_content += "\n\n### Notes:\n" + notes_text
+                    md_content = md_content.strip()
 
         return DocumentConverterResult(markdown=md_content.strip())
+
+    def _image_to_html(
+        self,
+        image_stream: BinaryIO,
+        stream_info: StreamInfo,
+        **kwargs: Any,
+    ) -> Optional[str]:
+        """Override to render an embedded image as an HTML fragment.
+
+        The stream is borrowed, seekable, and positioned at zero; do not close
+        or retain it. StreamInfo describes the image, not the presentation.
+        Existing conversion options are forwarded through kwargs.
+
+        Native LLM captions take precedence. Otherwise, return None or blank
+        text to retain the native image representation, or HTML with literal
+        text escaped. The fragment passes through HtmlConverter before being
+        placed at the picture's position in slide/group order. Hook failures
+        propagate through the normal conversion failure path.
+        """
+        return None
+
+    def _convert_picture_to_markdown(self, shape, *, slide=None, **kwargs):
+        llm_description = ""
+        alt_text = ""
+        image_blob, image_content_type, image_filename = self._get_image_info(shape)
+        image_stream_info = StreamInfo(
+            mimetype=image_content_type,
+            extension=os.path.splitext(image_filename)[1] if image_filename else None,
+            filename=image_filename,
+        )
+
+        llm_client = kwargs.get("llm_client")
+        llm_model = kwargs.get("llm_model")
+        if llm_client is not None and llm_model is not None and image_blob is not None:
+            with io.BytesIO(image_blob) as image_stream:
+                try:
+                    llm_description = llm_caption(
+                        image_stream,
+                        image_stream_info,
+                        client=llm_client,
+                        model=llm_model,
+                        prompt=kwargs.get("llm_prompt"),
+                        slide=slide,
+                        shape=shape,
+                        use_advanced_prompt=kwargs.get(
+                            "llm_use_advanced_prompt", True
+                        ),
+                    )
+                except Exception:
+                    # Preserve native caption failure fallback.
+                    pass
+
+        if (
+            (not llm_description or not llm_description.strip())
+            and image_blob is not None
+            and type(self)._image_to_html is not PptxConverter._image_to_html
+        ):
+            with io.BytesIO(image_blob) as image_stream:
+                fragment = self._image_to_html(
+                    image_stream, image_stream_info, **kwargs
+                )
+            soup = _parse_image_html(fragment)
+            if soup is not None:
+                return (
+                    "\n"
+                    + self._html_converter.convert_string(str(soup), **kwargs).markdown
+                    + "\n"
+                )
+
+        # Keep native caption/alt Markdown separate from custom image HTML.
+        try:
+            alt_text = shape._element._nvXxPr.cNvPr.attrib.get("descr", "")
+        except Exception:
+            pass
+        alt_text = (
+            "\n".join(
+                text for text in [llm_description, alt_text] if text and text.strip()
+            )
+            or shape.name
+        )
+        alt_text = re.sub(r"[\r\n\[\]]", " ", alt_text)
+        alt_text = re.sub(r"\s+", " ", alt_text).strip()
+
+        if kwargs.get("keep_data_uris", False) and image_blob is not None:
+            content_type = image_content_type or "image/png"
+            b64_string = base64.b64encode(image_blob).decode("utf-8")
+            return f"\n![{alt_text}](data:{content_type};base64,{b64_string})\n"
+        filename = re.sub(r"\W", "", shape.name) + ".jpg"
+        return "\n![" + alt_text + "](" + filename + ")\n"
+
+    def _find_svg_blip_part(self, shape):
+        """Return the image part referenced by an ``<asvg:svgBlip>``, if any.
+
+        PowerPoint stores SVG pictures as a blip whose main ``r:embed`` points
+        to a rasterized PNG fallback, plus an ``<asvg:svgBlip>`` extension
+        pointing to the SVG. When there is no raster fallback the ``<a:blip>``
+        has no ``r:embed`` at all, so python-pptx's ``shape.image`` fails. This
+        resolves the SVG part directly from the ``svgBlip`` extension.
+        """
+        try:
+            nsmap = {
+                "asvg": "http://schemas.microsoft.com/office/drawing/2016/SVG/main",
+            }
+            r_embed = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"
+            for svg_blip in shape._element.findall(".//asvg:svgBlip", nsmap):
+                embed_rid = svg_blip.get(r_embed)
+                if not embed_rid:
+                    continue
+                return shape.part.related_part(embed_rid)
+        except Exception:
+            pass
+        return None
+
+    def _get_image_info(self, shape):
+        """Return (blob, content_type, filename) for a picture shape.
+
+        Handles SVG images that lack a rasterized fallback. In that case
+        ``shape.image`` raises ``ValueError("no embedded image")`` because the
+        ``<a:blip>`` has no ``r:embed`` attribute (only an ``<asvg:svgBlip>``
+        extension). We fall back to resolving the SVG blip directly.
+        """
+        try:
+            image = shape.image
+            return image.blob, image.content_type, image.filename
+        except Exception:
+            pass
+
+        # Fall back to an embedded SVG blip (image without a raster fallback)
+        part = self._find_svg_blip_part(shape)
+        if part is not None:
+            try:
+                filename = os.path.basename(getattr(part, "partname", "") or "") or None
+                return part.blob, "image/svg+xml", filename
+            except Exception:
+                pass
+
+        return None, None, None
 
     def _is_picture(self, shape):
         if shape.shape_type == pptx.enum.shapes.MSO_SHAPE_TYPE.PICTURE:
             return True
         if shape.shape_type == pptx.enum.shapes.MSO_SHAPE_TYPE.PLACEHOLDER:
-            if hasattr(shape, "image"):
-                return True
+            # ``shape.image`` can raise (e.g. ValueError "no embedded image")
+            # for SVG placeholders without a raster fallback, so guard against
+            # any exception rather than relying on hasattr (which only swallows
+            # AttributeError).
+            try:
+                if shape.image is not None:
+                    return True
+            except Exception:
+                # Still a picture if it carries an embedded SVG blip.
+                if self._find_svg_blip_part(shape) is not None:
+                    return True
         return False
 
     def _is_table(self, shape):
@@ -258,18 +401,28 @@ class PptxConverter(DocumentConverter):
     def _convert_chart_to_markdown(self, chart):
         try:
             md = "\n\n### Chart"
-            if chart.has_title:
+            # ChartTitle.text_frame is documented as destructive -- it creates
+            # a text frame if one isn't already present, so it never returns
+            # None. has_text_frame is the property that actually reflects
+            # whether a text frame exists.
+            if chart.has_title and chart.chart_title.has_text_frame:
                 md += f": {chart.chart_title.text_frame.text}"
             md += "\n\n"
             data = []
             category_names = [c.label for c in chart.plots[0].categories]
-            series_names = [s.name for s in chart.series]
+            series_list = list(chart.series)
+            series_names = [s.name for s in series_list]
             data.append(["Category"] + series_names)
+
+            # Materialize each series' values once. Accessing series.values[idx]
+            # inside the nested loop is O(n^2) in python-pptx (each lookup does an
+            # XPath scan of all points), which is extremely slow on large charts.
+            series_values = [list(s.values) for s in series_list]
 
             for idx, category in enumerate(category_names):
                 row = [category]
-                for series in chart.series:
-                    row.append(series.values[idx])
+                for sv in series_values:
+                    row.append(sv[idx] if idx < len(sv) else None)
                 data.append(row)
 
             markdown_table = []
