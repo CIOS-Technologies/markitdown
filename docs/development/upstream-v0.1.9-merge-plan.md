@@ -154,3 +154,24 @@ Also from the review:
 - PPTX captions stay synchronous in-process (current production behaviour); moving PPTX onto the shared pipeline is not in this merge.
 
 **Correction to "Verified facts":** ai_personality's call is `convert(path, max_image_workers=N)` for every format, plus the four layout kwargs for PDF only.
+
+## Implementation log (ENG-1)
+
+| Commit | Slice | Notes |
+|---|---|---|
+| `000726e` | 1 — merge upstream v0.1.9 | Conflicts resolved per Round 1; fork test divergences in `tests/conftest.py` (5+4 skips, 23 non-strict xfails); PDF comparison in `upstream-pdf-comparison.md`. |
+| `8b1e349` | 2a — shared pipeline | `converters/_image_descriptions.py` (`describe_images_in_markdown`); real mimetypes on async/threaded/subprocess paths; exact last-segment context; table-safe replacement. |
+| `32a896e` | 2b — DOCX/XLSX + PPTX groups | `DocxConverterDescribed` / `XlsxConverterDescribed` registered in place of the builtins; per-call session via kwargs; png/jpeg/gif/webp only; `keep_data_uris` restores data URIs; grouped PPTX pictures use the converter's walk order. |
+
+Review: each slice reviewed by Cowork against the plan; 8 guard tests mutation-checked (all caught).
+
+Live check (Gemini 2.5 Flash, `MarkItDown(gemini_api_key=…, llm_model="gemini-2.5-flash")`, `convert(…, max_image_workers=4)`), 2026-11-05:
+- PDF `test_image.pdf`: 2 descriptions. PPTX `test.pptx`: description in alt text. DOCX with a real diagram: described. XLSX banners: 1 of 2 described.
+- Subprocess worker path (production under gevent): JPEG described, real mimetype passed.
+- Synthetic text-banner images are sometimes answered `SKIP:` by Gemini — this is the advanced prompt's "skip decorative/UI images" rule in `_gemini_caption.py`, not a pipeline fault (same DOCX with a real photo is described).
+- Not verified here: the real gevent switch inside ai_personality (gevent is not in markitdown's venv) — covered by the ai_personality pin-bump step (upload on the test stack).
+
+LOW end-list (not blocking):
+1. `ImageDescriptionSession.add` base64-encodes every image even when `keep_data_uris` is off (memory only).
+2. Ungrouped PPTX pictures still take context from `slide.shapes` collection order, grouped ones from the visual walk order — unify on walk order.
+3. Pre-existing: the subprocess worker receives the API key via a temp JSON file under `/tmp`.
