@@ -32,12 +32,58 @@ ACCEPTED_FILE_EXTENSIONS = [".pptx"]
 
 
 
+def _shape_walk_key(shape):
+    """Same top-then-left order convert() uses when it walks a slide."""
+    return (
+        float("-inf") if shape.top is None else shape.top,
+        float("-inf") if shape.left is None else shape.left,
+    )
+
+
+def _is_group_shape(shape) -> bool:
+    try:
+        return shape.shape_type == pptx.enum.shapes.MSO_SHAPE_TYPE.GROUP
+    except Exception:
+        return False
+
+
+def _flatten_shapes_in_walk_order(shapes):
+    """Shapes in convert() order, with each group's children expanded in place.
+
+    The group shape stays where it was. Its children follow immediately, in
+    the same sorted order convert() uses for that group. Nested groups expand
+    the same way.
+    """
+    flat = []
+    for shape in sorted(shapes, key=_shape_walk_key):
+        flat.append(shape)
+        if _is_group_shape(shape):
+            flat.extend(_flatten_shapes_in_walk_order(shape.shapes))
+    return flat
+
+
+def _append_shape_text(bucket: str, other_shape, picture) -> str:
+    """Add other_shape's text when it has a text frame. The picture is skipped."""
+    if (
+        other_shape != picture
+        and hasattr(other_shape, "has_text_frame")
+        and other_shape.has_text_frame
+    ):
+        return bucket + other_shape.text + " "
+    return bucket
+
+
 def _slide_text_around_picture(slide, shape):
     """Text on this slide, split into what sits before and after the picture.
 
-    Ported from our pre-merge converter. Pictures inside a group are not in
-    slide.shapes, so the index lookup fails and every other text shape becomes
-    context before the picture. Each side is capped at 800 characters.
+    A picture that is directly on the slide keeps the previous rule: index in
+    slide.shapes (collection order, not visual sort) and only that level's
+    text frames. Each side is capped at 800 characters.
+
+    A picture inside a group is not in slide.shapes. It is found in the
+    flattened walk convert() uses (sorted by top, then left, group children
+    expanded in place). Text inside groups counts, on the side of the
+    picture where that text sits.
     """
     slide_text_before = ""
     slide_text_after = ""
@@ -46,24 +92,38 @@ def _slide_text_around_picture(slide, shape):
     try:
         shape_index = list(slide.shapes).index(shape)
         for idx, other_shape in enumerate(slide.shapes):
-            if (
-                other_shape != shape
-                and hasattr(other_shape, "has_text_frame")
-                and other_shape.has_text_frame
-            ):
-                if idx < shape_index:
-                    slide_text_before += other_shape.text + " "
-                elif idx > shape_index:
-                    slide_text_after += other_shape.text + " "
-    except (ValueError, AttributeError):
-        # Grouped or otherwise unlisted pictures: keep the slide text we can see.
+            if idx < shape_index:
+                slide_text_before = _append_shape_text(
+                    slide_text_before, other_shape, shape
+                )
+            elif idx > shape_index:
+                slide_text_after = _append_shape_text(
+                    slide_text_after, other_shape, shape
+                )
+    except ValueError:
+        # Grouped picture. Place it in the same walk convert() uses so text
+        # inside the group is before or after, not all piled in front.
+        flat = _flatten_shapes_in_walk_order(slide.shapes)
+        try:
+            shape_index = flat.index(shape)
+        except ValueError:
+            flat = list(slide.shapes)
+            shape_index = None
+        for idx, other_shape in enumerate(flat):
+            if shape_index is None or idx < shape_index:
+                slide_text_before = _append_shape_text(
+                    slide_text_before, other_shape, shape
+                )
+            elif idx > shape_index:
+                slide_text_after = _append_shape_text(
+                    slide_text_after, other_shape, shape
+                )
+    except AttributeError:
+        # The slide shape list could not be read. Keep the text we can see.
         for other_shape in slide.shapes:
-            if (
-                other_shape != shape
-                and hasattr(other_shape, "has_text_frame")
-                and other_shape.has_text_frame
-            ):
-                slide_text_before += other_shape.text + " "
+            slide_text_before = _append_shape_text(
+                slide_text_before, other_shape, shape
+            )
     context_before = slide_text_before[:800] if slide_text_before else None
     context_after = slide_text_after[:800] if slide_text_after else None
     return context_before, context_after

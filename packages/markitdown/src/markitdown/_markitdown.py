@@ -30,8 +30,6 @@ from .converters import (
     IpynbConverter,
     BingSerpConverter,
     PdfConverter,
-    DocxConverter,
-    XlsxConverter,
     XlsConverter,
     PptxConverter,
     ImageConverter,
@@ -43,6 +41,9 @@ from .converters import (
     ContentUnderstandingConverter,
     CsvConverter,
 )
+
+from .converters._docx_converter_described import DocxConverterDescribed
+from .converters._xlsx_converter_described import XlsxConverterDescribed
 
 from ._base_converter import DocumentConverter, DocumentConverterResult
 
@@ -252,8 +253,10 @@ class MarkItDown:
             self.register_converter(WikipediaConverter())
             self.register_converter(YouTubeConverter())
             self.register_converter(BingSerpConverter())
-            self.register_converter(DocxConverter())
-            self.register_converter(XlsxConverter())
+            # Subclasses replace the builtins. Do not also register the
+            # upstream classes: a second registration would compete with these.
+            self.register_converter(DocxConverterDescribed())
+            self.register_converter(XlsxConverterDescribed())
             self.register_converter(XlsConverter())
             self.register_converter(PptxConverter())
             self.register_converter(AudioConverter())
